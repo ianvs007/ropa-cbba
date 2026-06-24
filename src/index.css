@@ -1,0 +1,257 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ═══════════════════════════════════════════════════════
+   TIENDA DE ROPA — Design System
+   Paleta: Rosa fashion + Crema elegante + Dorado premium
+   ═══════════════════════════════════════════════════════ */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+:root {
+  /* Colores primarios */
+  --rose: #D946A8;
+  --rose-dark: #A3308A;
+  --rose-light: #FDF0F9;
+  --rose-soft: #FBBFE4;
+
+  /* Fondo y superficies */
+  --cream: #FDF8F5;
+  --cream-dark: #F5EDE8;
+  --white: #FFFFFF;
+
+  /* Texto */
+  --fashion-dark: #1A0A14;
+  --fashion-mid: #5C3D52;
+  --fashion-muted: #9B7A8D;
+
+  /* Acento Dorado */
+  --gold: #C9963B;
+  --gold-light: #FDF3E0;
+
+  /* Estado */
+  --success: #16A34A;
+  --warning: #D97706;
+  --danger: #DC2626;
+  --info: #2563EB;
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--cream);
+    color: var(--fashion-dark);
+    font-size: 13px;
+    /* Base: móvil/tablet pequeña */
+    line-height: 1.5;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+
+  /* Laptop HD más común: 1366×768 */
+  @media (min-width: 1280px) {
+    body {
+      font-size: 14px;
+    }
+  }
+
+  /* Desktop Full HD: 1920×1080+ */
+  @media (min-width: 1536px) {
+    body {
+      font-size: 15px;
+    }
+  }
+
+  input,
+  select,
+  textarea,
+  button {
+    font-size: inherit;
+    line-height: inherit;
+  }
+
+  table {
+    @apply w-full;
+    table-layout: auto;
+  }
+
+  img {
+    max-width: 100%;
+    height: auto;
+  }
+
+  /* Celdas de tabla compactas en pantallas medianas (Laptop HD+) */
+  @media (max-width: 1440px) {
+    th,
+    td {
+      padding-top: 0.4rem !important;
+      padding-bottom: 0.4rem !important;
+      padding-left: 0.75rem !important;
+      padding-right: 0.75rem !important;
+    }
+  }
+
+  /* Ajuste para pantallas pequeñas (Laptop estándar) */
+  @media (max-width: 1280px) {
+    .fashion-card {
+      @apply p-3;
+    }
+    
+    body {
+      font-size: 13px;
+    }
+  }
+}
+
+/* ── Scrollbar personalizada ── */
+@layer utilities {
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: #F5EDE8;
+    border-radius: 10px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: #D946A8;
+    border-radius: 10px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: #A3308A;
+  }
+
+  /* Hide number input spinners */
+  .no-spinner::-webkit-inner-spin-button,
+  .no-spinner::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  .no-spinner {
+    -moz-appearance: textfield;
+  }
+
+  /* Botón primario */
+  .btn-primary {
+    @apply text-white font-semibold px-5 py-2.5 rounded-xl transition-all shadow-lg active:scale-95;
+    background: linear-gradient(135deg, #D946A8, #A3308A);
+    box-shadow: 0 4px 15px rgba(217, 70, 168, 0.35);
+  }
+
+  .btn-primary:hover {
+    background: linear-gradient(135deg, #A3308A, #7A1F68);
+    box-shadow: 0 6px 20px rgba(217, 70, 168, 0.5);
+  }
+
+  /* Botón secundario */
+  .btn-secondary {
+    @apply bg-white border border-pink-200 text-pink-700 font-semibold px-5 py-2.5 rounded-xl transition-all hover:bg-pink-50 active:scale-95;
+  }
+
+  /* Botón peligro */
+  .btn-danger {
+    @apply bg-red-600 hover:bg-red-700 text-white font-semibold px-4 py-2 rounded-xl transition-all active:scale-95;
+  }
+
+  /* Card estándar */
+  .fashion-card {
+    @apply bg-white rounded-2xl border border-pink-100 shadow-sm;
+  }
+
+  /* Sidebar item activo */
+  .sidebar-active {
+    background: linear-gradient(135deg, #D946A8, #A3308A);
+    box-shadow: 0 4px 15px rgba(217, 70, 168, 0.4);
+  }
+
+  /* Input estilizado */
+  .fashion-input {
+    @apply w-full border border-pink-200 rounded-xl px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-pink-300 focus:border-pink-400 placeholder-pink-300 transition-all;
+  }
+
+  /* Badge */
+  .badge-rose {
+    @apply bg-pink-100 text-pink-700 text-xs font-bold px-2 py-0.5 rounded-full;
+  }
+
+  .badge-gold {
+    @apply bg-yellow-100 text-yellow-700 text-xs font-bold px-2 py-0.5 rounded-full;
+  }
+
+  .badge-green {
+    @apply bg-green-100 text-green-700 text-xs font-bold px-2 py-0.5 rounded-full;
+  }
+
+  .badge-red {
+    @apply bg-red-100 text-red-700 text-xs font-bold px-2 py-0.5 rounded-full;
+  }
+
+  .badge-blue {
+    @apply bg-blue-100 text-blue-700 text-xs font-bold px-2 py-0.5 rounded-full;
+  }
+
+  .page-bg {
+    background-color: var(--cream);
+    min-height: 100vh;
+  }
+}
+
+/* ── Animaciones ── */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in {
+  animation: fadeIn 0.25s ease-out forwards;
+}
+
+@keyframes shimmer {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.6;
+  }
+}
+
+.shimmer {
+  animation: shimmer 2s ease-in-out infinite;
+}
+
+/* ── Print styles ── */
+@media print {
+
+  aside,
+  .no-print {
+    display: none !important;
+  }
+
+  main {
+    margin-left: 0 !important;
+  }
+
+  .print-ticket {
+    width: 80mm;
+    font-size: 12px;
+    font-family: monospace;
+  }
+}
