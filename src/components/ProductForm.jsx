@@ -2,7 +2,7 @@ import React from 'react';
 import { X } from 'lucide-react';
 import { db, generateBarcode, generateBarcodesForProduct, getLocalISOString } from '../db';
 import TypeaheadInput from './ui/TypeaheadInput';
-import { detectColorFromCanvas } from '../utils/colorDetection';
+import { detectColorsFromCanvas } from '../utils/colorDetection';
 import { classifyGarment } from '../utils/garmentClassifier';
 
 const SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'Talla Única',
@@ -221,11 +221,11 @@ export default function ProductForm({
         setSuggestions(null);
         setAnalyzing(true);
         try {
-            // 1) Color — inmediato.
-            let color = null;
+            // 1) Color — inmediato. Top-2 para casos frontera.
+            let colors = [];
             try {
-                const c = detectColorFromCanvas(canvas, { centralRatio: 0.5 });
-                color = c.name;
+                const { matches } = detectColorsFromCanvas(canvas, { centralRatio: 0.5, n: 2 });
+                colors = matches.map(m => m.name);
             } catch (e) {
                 console.warn('Detección de color falló:', e);
             }
@@ -242,7 +242,7 @@ export default function ProductForm({
                 console.warn('Clasificación de categoría falló:', e);
             }
 
-            setSuggestions({ color, categorias });
+            setSuggestions({ colors, categorias });
         } finally {
             setAnalyzing(false);
         }
@@ -370,15 +370,17 @@ export default function ProductForm({
                                         </button>
                                     </div>
 
-                                    {/* Color sugerido */}
-                                    {suggestions.color && (
+                                    {/* Color sugerido (top-2) */}
+                                    {suggestions.colors && suggestions.colors.length > 0 && (
                                         <div className="flex items-center gap-2 flex-wrap">
                                             <span className="text-xs text-gray-600">Color:</span>
-                                            <button type="button"
-                                                onClick={() => change('color', suggestions.color)}
-                                                className="px-3 py-1 rounded-full bg-white border border-blue-300 text-sm hover:bg-blue-100 transition-colors">
-                                                {suggestions.color} ＋
-                                            </button>
+                                            {suggestions.colors.map(col => (
+                                                <button key={col} type="button"
+                                                    onClick={() => change('color', col)}
+                                                    className="px-3 py-1 rounded-full bg-white border border-blue-300 text-sm hover:bg-blue-100 transition-colors">
+                                                    {col} ＋
+                                                </button>
+                                            ))}
                                         </div>
                                     )}
 
@@ -397,7 +399,7 @@ export default function ProductForm({
                                     )}
 
                                     {/* Sin resultados útiles */}
-                                    {!suggestions.color && (!suggestions.categorias || suggestions.categorias.length === 0) && (
+                                    {(!suggestions.colors || suggestions.colors.length === 0) && (!suggestions.categorias || suggestions.categorias.length === 0) && (
                                         <p className="text-xs text-gray-500">
                                             No se obtuvieron sugerencias claras. Completa los campos manualmente.
                                         </p>

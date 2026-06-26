@@ -24,15 +24,18 @@ export const COLOR_PALETTE = [
     { name: 'NEGRO',    rgb: [20, 20, 20] },
     { name: 'BLANCO',   rgb: [245, 245, 245] },
     { name: 'GRIS',     rgb: [128, 128, 128] },
-    { name: 'PLOMO',    rgb: [105, 105, 110] }, // sinónimo boliviano de gris oscuro
+    { name: 'GRIS CLARO', rgb: [190, 190, 190] },
+    { name: 'PLOMO',    rgb: [95, 95, 100] },   // gris oscuro (boliviano)
+    { name: 'AZUL GRISACEO', rgb: [95, 120, 150] }, // tono frontera azul/gris
     { name: 'ROJO',     rgb: [200, 30, 40] },
     { name: 'GUINDO',   rgb: [120, 30, 40] },   // rojo vino, común en Bolivia
     { name: 'ROSADO',   rgb: [240, 130, 170] },
     { name: 'NARANJA',  rgb: [230, 120, 30] },
     { name: 'AMARILLO', rgb: [240, 215, 50] },
     { name: 'VERDE',    rgb: [40, 150, 70] },
+    { name: 'VERDE CLARO', rgb: [140, 200, 120] },
     { name: 'CELESTE',  rgb: [120, 195, 230] },
-    { name: 'AZUL',     rgb: [40, 70, 180] },
+    { name: 'AZUL',     rgb: [50, 90, 175] },   // suavizado (menos saturado)
     { name: 'MARINO',   rgb: [25, 35, 80] },    // azul marino
     { name: 'MORADO',   rgb: [110, 50, 160] },
     { name: 'CAFE',     rgb: [110, 70, 40] },
@@ -128,6 +131,31 @@ export function nearestPaletteColor(rgb, palette = COLOR_PALETTE) {
 }
 
 /**
+ * Como nearestPaletteColor, pero devuelve los N colores más cercanos
+ * ordenados de más a menos parecido. Útil para casos frontera
+ * (ej. azul grisáceo) donde conviene ofrecer 2 opciones al usuario.
+ *
+ * @param {[number, number, number]} rgb
+ * @param {number} [n=2]
+ * @param {{ name: string, rgb: [number, number, number] }[]} [palette=COLOR_PALETTE]
+ * @returns {Array<{ name: string, rgb: [number, number, number], distance: number, confidence: number }>}
+ */
+export function nearestPaletteColors(rgb, n = 2, palette = COLOR_PALETTE) {
+    const MAX_DIST = 441.6729559300637;
+    const scored = palette.map(color => {
+        const distance = Math.sqrt(rgbDistanceSq(rgb, color.rgb));
+        return {
+            name: color.name,
+            rgb: color.rgb,
+            distance,
+            confidence: Math.max(0, 1 - distance / MAX_DIST),
+        };
+    });
+    scored.sort((a, b) => a.distance - b.distance);
+    return scored.slice(0, Math.max(1, n));
+}
+
+/**
  * Función principal: de un ImageData (o canvas) al nombre de color del catálogo.
  *
  * @param {ImageData} imageData
@@ -155,4 +183,23 @@ export function detectColorFromCanvas(canvas, options = {}) {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     return detectColor(imageData, options);
+}
+
+/**
+ * Como detectColorFromCanvas, pero devuelve los N colores más cercanos.
+ *
+ * @param {HTMLCanvasElement} canvas
+ * @param {object} [options]
+ * @param {number} [options.centralRatio=0.5]
+ * @param {number} [options.n=2]
+ * @param {{ name: string, rgb: [number, number, number] }[]} [options.palette=COLOR_PALETTE]
+ * @returns {{ sampledRgb: [number, number, number], matches: Array<{ name: string, distance: number, confidence: number }> }}
+ */
+export function detectColorsFromCanvas(canvas, options = {}) {
+    const { centralRatio = 0.5, n = 2, palette = COLOR_PALETTE } = options;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const sampledRgb = averageCentralColor(imageData, centralRatio);
+    const matches = nearestPaletteColors(sampledRgb, n, palette);
+    return { sampledRgb, matches };
 }
