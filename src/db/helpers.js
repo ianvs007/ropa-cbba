@@ -634,14 +634,22 @@ export async function calculateMonthlySummary(monthKey) {
     // Métricas
     const itemsSold = mSales.reduce((sum, s) => sum + (s.items || []).reduce((a, i) => a + i.qty, 0), 0);
 
+    // Costo de mercadería vendida (COGS) y utilidad bruta de productos
+    // Se calcula sobre el costo almacenado en cada ítem de la venta (item.cost)
+    const totalCost = mSales.reduce((sum, s) =>
+        sum + (s.items || []).reduce((a, i) => a + ((i.cost || 0) * (i.qty || 0)), 0), 0);
+    const productProfit = totalSalesDirect - totalCost;
+
     return {
         monthKey,
         totalSales: totalIncome,
         salesDirect: totalSalesDirect,
         resPayments: totalResPayments,
         totalExpenses,
+        totalCost,
+        productProfit,
         expensesByCategory: Object.entries(expensesByCategory).map(([name, value]) => ({ name, value })),
-        netProfit: totalIncome - totalExpenses,
+        netProfit: productProfit - totalExpenses,
         salesCount: mSales.length,
         resCount: mRes.length,
         itemsSold,

@@ -4,7 +4,7 @@ import { db, calculateMonthlySummary } from '../../db';
 import { 
     Calendar, TrendingUp, Receipt, DollarSign, 
     ArrowLeft, Printer, ShoppingBag, PieChart as PieIcon,
-    ChevronLeft, ChevronRight, FileText
+    ChevronLeft, ChevronRight, FileText, Package, Wallet
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { 
@@ -97,7 +97,7 @@ export default function MonthlyReport() {
             </div>
 
             {/* KPIs Principales */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
                 <div className="fashion-card p-5 border-l-4 border-l-blue-500">
                     <div className="flex items-center gap-3 mb-2">
                         <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600">
@@ -107,6 +107,30 @@ export default function MonthlyReport() {
                     </div>
                     <p className="text-2xl font-black text-blue-900">{formatCurrency(reportData.totalSales, currency)}</p>
                     <p className="text-[10px] text-blue-500 italic mt-1">{reportData.salesCount} ventas + {reportData.resCount} abonos</p>
+                </div>
+
+                <div className="fashion-card p-5 border-l-4 border-l-orange-500">
+                    <div className="flex items-center gap-3 mb-2">
+                        <div className="w-10 h-10 bg-orange-50 rounded-xl flex items-center justify-center text-orange-600">
+                            <Package size={20} />
+                        </div>
+                        <p className="text-[11px] font-black text-orange-400 uppercase">Costo Mercadería</p>
+                    </div>
+                    <p className="text-2xl font-black text-orange-900">{formatCurrency(reportData.totalCost, currency)}</p>
+                    <p className="text-[10px] text-orange-500 italic mt-1">Costo de lo vendido</p>
+                </div>
+
+                <div className="fashion-card p-5 border-l-4 border-l-emerald-500">
+                    <div className="flex items-center gap-3 mb-2">
+                        <div className="w-10 h-10 bg-emerald-50 rounded-xl flex items-center justify-center text-emerald-600">
+                            <Wallet size={20} />
+                        </div>
+                        <p className="text-[11px] font-black text-emerald-400 uppercase">Utilidad Productos</p>
+                    </div>
+                    <p className="text-2xl font-black text-emerald-700">{formatCurrency(reportData.productProfit, currency)}</p>
+                    <p className="text-[10px] text-emerald-600 font-bold mt-1">
+                        {((reportData.productProfit / (reportData.salesDirect || 1)) * 100).toFixed(1)}% Margen bruto
+                    </p>
                 </div>
 
                 <div className="fashion-card p-5 border-l-4 border-l-red-500">
@@ -129,7 +153,7 @@ export default function MonthlyReport() {
                     </div>
                     <p className="text-2xl font-black text-green-700">{formatCurrency(reportData.netProfit, currency)}</p>
                     <p className="text-[10px] text-green-600 font-bold mt-1">
-                        {((reportData.netProfit / (reportData.totalSales || 1)) * 100).toFixed(1)}% Margen
+                        Utilidad productos − gastos
                     </p>
                 </div>
 
