@@ -75,10 +75,18 @@ export default function MassLabeling() {
             if (filterCat && p.category !== filterCat) return false;
             if (filterStock === 'instock' && p.stock <= 0) return false;
             
-            // Filtros por fecha de creación
+            // Filtros por fecha (y hora) de creación
             if (p.createdAt) {
-                if (dateStart && new Date(p.createdAt) < new Date(dateStart + 'T00:00:00')) return false;
-                if (dateEnd && new Date(p.createdAt) > new Date(dateEnd + 'T23:59:59')) return false;
+                // Si el filtro ya incluye hora (contiene 'T'), se usa tal cual;
+                // si solo trae fecha, se asume inicio/fin del día (retrocompatible).
+                if (dateStart) {
+                    const startBound = dateStart.includes('T') ? dateStart : dateStart + 'T00:00:00';
+                    if (new Date(p.createdAt) < new Date(startBound)) return false;
+                }
+                if (dateEnd) {
+                    const endBound = dateEnd.includes('T') ? dateEnd : dateEnd + 'T23:59:59';
+                    if (new Date(p.createdAt) > new Date(endBound)) return false;
+                }
             } else if (dateStart || dateEnd) {
                 // Si el producto no tiene fecha y se aplicó un filtro, se excluye
                 return false;
@@ -322,24 +330,24 @@ export default function MassLabeling() {
                     <div className="px-2 flex items-center bg-pink-50 text-pink-500 border-r border-pink-100">
                         <Calendar size={14} />
                     </div>
-                    <input 
-                        type="date"
+                    <input
+                        type="datetime-local"
                         value={dateStart}
                         onChange={e => setDateStart(e.target.value)}
                         className="w-full px-2 py-2 text-sm text-gray-700 outline-none"
-                        title="Fecha Inicio"
+                        title="Fecha y hora de inicio"
                     />
                 </div>
                 <div className="flex bg-white border border-pink-200 rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-pink-300 transition-all">
                     <div className="px-2 flex items-center bg-pink-50 text-pink-500 border-r border-pink-100 text-xs font-bold">
                         A
                     </div>
-                    <input 
-                        type="date"
+                    <input
+                        type="datetime-local"
                         value={dateEnd}
                         onChange={e => setDateEnd(e.target.value)}
                         className="w-full px-2 py-2 text-sm text-gray-700 outline-none"
-                        title="Fecha Fin"
+                        title="Fecha y hora de fin"
                     />
                 </div>
             </div>
