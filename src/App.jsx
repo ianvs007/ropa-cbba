@@ -16,7 +16,6 @@ import Expenses from './components/Expenses';
 import ProductList from './components/ProductList';
 import Inventory from './components/Inventory';
 import Kardex from './components/Kardex';
-import ImageSearch from './components/ImageSearch';
 
 // Reportes
 import Dashboard from './components/reports/Dashboard';
@@ -63,7 +62,6 @@ function AppRoutes() {
               <Route path="/product-options" element={<ProductOptions />} />
               <Route path="/mass-labeling" element={<MassLabeling />} />
               <Route path="/inventory" element={<Inventory />} />
-              <Route path="/image-search" element={<ImageSearch />} />
               <Route path="/kardex" element={<Kardex />} />
               <Route path="/users" element={<Users />} />
               <Route path="/settings" element={<Settings />} />
@@ -91,7 +89,6 @@ function AppRoutes() {
               <Route path="/product-options" element={<Navigate to="/pos" replace />} />
               <Route path="/mass-labeling" element={<Navigate to="/pos" replace />} />
               <Route path="/inventory" element={<Navigate to="/pos" replace />} />
-              <Route path="/image-search" element={<Navigate to="/pos" replace />} />
               <Route path="/kardex" element={<Navigate to="/pos" replace />} />
               <Route path="/users" element={<Navigate to="/pos" replace />} />
               <Route path="/settings" element={<Navigate to="/pos" replace />} />
