@@ -2,7 +2,7 @@ import React from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, generateBarcodesForProduct, getLocalISOString } from '../db';
 import { jsPDF } from 'jspdf';
-import { Boxes, AlertTriangle, TrendingDown, Package, Plus, X, CheckCircle, Printer, Filter, Camera, Loader2 } from 'lucide-react';
+import { Boxes, AlertTriangle, TrendingDown, Package, Plus, X, CheckCircle, Printer, Filter, Camera, Loader2, ImageOff } from 'lucide-react';
 import { useNotification } from '../hooks/useNotification';
 import { formatCurrency, drawPDFHeader } from '../utils';
 import { useAvailableStock } from '../hooks/useAvailableStock';
@@ -380,10 +380,25 @@ export default function Inventory() {
                             ) : rows.map(p => (
                                 <tr key={p.id} className="hover:bg-pink-50/50 transition-colors">
                                     <td className="px-4 py-3">
-                                        <p className="font-semibold text-pink-900">{p.name}</p>
-                                        <div className="flex gap-1 flex-wrap mt-0.5 mb-1">
-                                            {p.brand && <span className="text-[10px] font-semibold bg-gray-100 text-gray-600 px-1.5 rounded">{p.brand}</span>}
-                                            {p.extraData && <span className="text-[10px] font-semibold bg-amber-50 text-amber-600 px-1.5 rounded border border-amber-100" title="Datos Extras">{p.extraData}</span>}
+                                        <div className="flex items-center gap-3">
+                                            {/* Miniatura de la foto del producto (56x56) */}
+                                            {p.photo ? (
+                                                <div className="w-14 h-14 rounded-lg border border-pink-100 overflow-hidden flex-shrink-0">
+                                                    <img src={p.photo} alt={p.name} className="w-full h-full object-cover" />
+                                                </div>
+                                            ) : (
+                                                <div className="w-14 h-14 rounded-lg border border-gray-200 bg-gray-100 flex flex-col items-center justify-center flex-shrink-0 text-gray-300">
+                                                    <ImageOff size={18} />
+                                                    <span className="text-[8px] leading-none mt-0.5">sin foto</span>
+                                                </div>
+                                            )}
+                                            <div>
+                                                <p className="font-semibold text-pink-900">{p.name}</p>
+                                                <div className="flex gap-1 flex-wrap mt-0.5 mb-1">
+                                                    {p.brand && <span className="text-[10px] font-semibold bg-gray-100 text-gray-600 px-1.5 rounded">{p.brand}</span>}
+                                                    {p.extraData && <span className="text-[10px] font-semibold bg-amber-50 text-amber-600 px-1.5 rounded border border-amber-100" title="Datos Extras">{p.extraData}</span>}
+                                                </div>
+                                            </div>
                                         </div>
                                     </td>
                                     <td className="px-4 py-3">
