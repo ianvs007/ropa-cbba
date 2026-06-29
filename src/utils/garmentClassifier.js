@@ -173,6 +173,51 @@ export async function classifyGarment(input) {
 }
 
 /**
+ * Genera el "embedding" visual (huella) de una imagen usando MobileNet.
+ *
+ * En lugar de las 1000 probabilidades de clase, pedimos a MobileNet el vector
+ * de características interno (`model.infer(input, true)`): 1024 floats que
+ * describen el aspecto de la prenda. Dos prendas parecidas → vectores cercanos.
+ *
+ * El vector se normaliza (norma L2 = 1) para que comparar por similitud coseno
+ * sea simplemente el producto punto (ver cosineSimilarity).
+ *
+ * @param {HTMLImageElement|HTMLCanvasElement|HTMLVideoElement|ImageData} input
+ *        Imagen de la que extraer la huella (un <canvas> con el frame sirve).
+ * @returns {Promise<number[]>} vector normalizado de 1024 floats.
+ */
+export async function getEmbedding(input) {
+    const model = await loadModel();
+    // segundo argumento `true` ⇒ devuelve el embedding, no las probabilidades.
+    const logits = model.infer(input, true);
+    const arr = Array.from(await logits.data());
+    logits.dispose(); // liberar el tensor de la memoria de TF.js
+
+    // Normalización L2: dividir cada componente por la norma del vector.
+    let norm = 0;
+    for (const v of arr) norm += v * v;
+    norm = Math.sqrt(norm);
+    if (norm === 0) return arr; // imagen vacía/uniforme: evitar división por cero.
+    return arr.map(v => v / norm);
+}
+
+/**
+ * Similitud coseno entre dos vectores YA normalizados (norma L2 = 1).
+ * Como ambos están normalizados, equivale al producto punto y cae en 0..1
+ * para embeddings de MobileNet (valores no negativos tras ReLU).
+ *
+ * @param {number[]} a vector normalizado.
+ * @param {number[]} b vector normalizado de la misma longitud.
+ * @returns {number} similitud (≈1 = idénticas, ≈0 = sin parecido).
+ */
+export function cosineSimilarity(a, b) {
+    if (!a || !b || a.length !== b.length) return 0;
+    let dot = 0;
+    for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+    return dot;
+}
+
+/**
  * Libera el modelo de memoria (opcional, para liberar recursos).
  * Tras llamarlo, la próxima clasificación recargará el modelo.
  */
