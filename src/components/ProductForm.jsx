@@ -2,8 +2,7 @@ import React from 'react';
 import { X } from 'lucide-react';
 import { db, generateBarcode, generateBarcodesForProduct, getLocalISOString } from '../db';
 import TypeaheadInput from './ui/TypeaheadInput';
-import { detectColorsFromCanvas } from '../utils/colorDetection';
-import { classifyGarment, getEmbedding } from '../utils/garmentClassifier';
+import { getEmbedding } from '../utils/garmentClassifier';
 
 const SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'Talla Única',
     '6', '8', '10', '12', '14', '16', '18', '20', '22', '24',
@@ -47,10 +46,6 @@ export default function ProductForm({
     const canvasRef = React.useRef(null);
     const streamRef = React.useRef(null);
     const formScrollRef = React.useRef(null);
-
-    // ── Reconocimiento (color + categoría) a partir de la foto capturada ──
-    const [suggestions, setSuggestions] = React.useState(null); // { color, categorias }
-    const [analyzing, setAnalyzing] = React.useState(false);
 
     // ── Códigos pre-generados (en memoria, no guardados hasta presionar Guardar) ──
     const [unitCodes, setUnitCodes] = React.useState([]);
@@ -219,51 +214,11 @@ export default function ProductForm({
             
             change('photo', resized);
 
-            // ── Reconocimiento sobre el mismo frame (no bloquea el guardado de la foto) ──
-            analyzeFromCanvas(canvas);
-
             stopCamera();
             showToast('✓ Foto capturada exitosamente');
         } catch (err) {
             console.error('Error al capturar foto:', err);
             showToast('Error al capturar la foto. Inténtalo de nuevo.', 'error');
-        }
-    };
-
-    /**
-     * Analiza el frame capturado para sugerir color y categoría.
-     * - Color: análisis de píxeles (instantáneo, sin IA).
-     * - Categoría: MobileNet (la primera vez descarga ~16MB del CDN).
-     * Las sugerencias NO se aplican solas; el usuario las confirma.
-     */
-    const analyzeFromCanvas = async (canvas) => {
-        setSuggestions(null);
-        setAnalyzing(true);
-        try {
-            // 1) Color — inmediato. Top-2 para casos frontera.
-            let colors = [];
-            try {
-                const { matches } = detectColorsFromCanvas(canvas, { centralRatio: 0.5, n: 2 });
-                colors = matches.map(m => m.name);
-            } catch (e) {
-                console.warn('Detección de color falló:', e);
-            }
-
-            // 2) Categoría — puede tardar (carga del modelo la 1ra vez).
-            let categorias = [];
-            try {
-                const results = await classifyGarment(canvas);
-                categorias = results
-                    .filter(r => r.categoria)        // solo las que mapean a una categoría real
-                    .map(r => r.categoria.toUpperCase());
-                categorias = [...new Set(categorias)]; // sin duplicados
-            } catch (e) {
-                console.warn('Clasificación de categoría falló:', e);
-            }
-
-            setSuggestions({ colors, categorias });
-        } finally {
-            setAnalyzing(false);
         }
     };
 
@@ -386,64 +341,6 @@ export default function ProductForm({
                         onChange={v => change('name', v.toUpperCase())}
                         options={nameOptions} required
                     />
-                    {/* ── Panel de sugerencias del reconocimiento por cámara ── */}
-                    {(analyzing || suggestions) && (
-                        <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
-                            {analyzing ? (
-                                <p className="text-sm text-blue-700 flex items-center gap-2">
-                                    <span className="inline-block w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-                                    Analizando la prenda… (la primera vez puede tardar al cargar el modelo)
-                                </p>
-                            ) : (
-                                <div className="space-y-3">
-                                    <div className="flex items-center justify-between">
-                                        <p className="text-sm font-semibold text-blue-800">
-                                            🔎 Sugerencias (revisa y aplica las que quieras)
-                                        </p>
-                                        <button type="button" onClick={() => setSuggestions(null)}
-                                            className="text-xs text-blue-500 hover:text-blue-700">
-                                            Descartar
-                                        </button>
-                                    </div>
-
-                                    {/* Color sugerido (top-2) */}
-                                    {suggestions.colors && suggestions.colors.length > 0 && (
-                                        <div className="flex items-center gap-2 flex-wrap">
-                                            <span className="text-xs text-gray-600">Color:</span>
-                                            {suggestions.colors.map(col => (
-                                                <button key={col} type="button"
-                                                    onClick={() => change('color', col)}
-                                                    className="px-3 py-1 rounded-full bg-white border border-blue-300 text-sm hover:bg-blue-100 transition-colors">
-                                                    {col} ＋
-                                                </button>
-                                            ))}
-                                        </div>
-                                    )}
-
-                                    {/* Categorías sugeridas */}
-                                    {suggestions.categorias && suggestions.categorias.length > 0 && (
-                                        <div className="flex items-center gap-2 flex-wrap">
-                                            <span className="text-xs text-gray-600">Categoría:</span>
-                                            {suggestions.categorias.map(cat => (
-                                                <button key={cat} type="button"
-                                                    onClick={() => change('category', cat)}
-                                                    className="px-3 py-1 rounded-full bg-white border border-blue-300 text-sm hover:bg-blue-100 transition-colors">
-                                                    {cat} ＋
-                                                </button>
-                                            ))}
-                                        </div>
-                                    )}
-
-                                    {/* Sin resultados útiles */}
-                                    {(!suggestions.colors || suggestions.colors.length === 0) && (!suggestions.categorias || suggestions.categorias.length === 0) && (
-                                        <p className="text-xs text-gray-500">
-                                            No se obtuvieron sugerencias claras. Completa los campos manualmente.
-                                        </p>
-                                    )}
-                                </div>
-                            )}
-                        </div>
-                    )}
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <TypeaheadInput label="Categoría" value={form.category}
