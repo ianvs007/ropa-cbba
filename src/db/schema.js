@@ -401,3 +401,33 @@ db.version(21).stores({
         if (p.hasEmbedding === undefined) p.hasEmbedding = 0;
     });
 });
+
+// ==============================================================================
+// 🔐 ESQUEMA v22 — PERMISOS GRANULARES POR USUARIO ADMIN SECUNDARIO
+// ==============================================================================
+// Se añade a la tabla users el campo `permissions` (objeto { [clave]: boolean }),
+// NO indexado, por lo que el string de stores de users NO cambia. Igualmente hay
+// que declarar la versión para que Dexie la registre; el resto de tablas se copian
+// idénticas a la v21. SIN .upgrade(): los admins secundarios sin `permissions`
+// quedan con acceso mínimo y hasPermission() trata permissions undefined como {}.
+db.version(22).stores({
+    products: '++id, name, barcode, category, brand, size, color, stock, cost, price, shortCode, active, createdAt, hasEmbedding',
+    kardex: '++id, productId, date, type',
+    sales: '++id, date, total, sellerId, paymentMethod, status, shiftId',
+    expenseCategories: '++id, name',
+    expenses: '++id, date, categoryId, amount, paymentMethod, userId, registeredBy, shiftId',
+    users: '++id, username, role',
+    settings: 'key',
+    reservations: '++id, clientName, clientPhone, productId, status, createdAt, sellerId',
+    reservationPayments: '++id, reservationId, date, status, userId, shiftId',
+    categories: '++id, name',
+    productNames: '++id, name',
+    productFields: '++id, name, type',
+    barcodes: '++id, productId, barcode, shortCode, used, createdAt',
+    brands: '++id, name',
+    colors: '++id, name',
+    cashClosures: '++id, date, userId, closedAt, openingId',
+    cashClosureHistory: '++id, closureId, date, changedBy',
+    securityLogs: '++id, timestamp, eventType, userId',
+    cashOpenings: '++id, date, userId, openedAt',
+});
