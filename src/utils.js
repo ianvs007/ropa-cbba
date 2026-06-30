@@ -391,6 +391,8 @@ export const printMonthlyReportGlobal = async (data, currency = 'Bs.') => {
 
     const stats = [
         { l: 'Ingresos Totales (Ventas + Abonos):', v: formatCurrency(data.totalSales, currency) },
+        { l: 'Costo de Mercadería Vendida:', v: formatCurrency(data.totalCost, currency) },
+        { l: 'Utilidad de Productos (Ventas - Costo):', v: formatCurrency(data.productProfit, currency) },
         { l: 'Gastos Totales del Mes:', v: formatCurrency(data.totalExpenses, currency) },
         { l: 'UTILIDAD NETA:', v: formatCurrency(data.netProfit, currency) },
     ];
