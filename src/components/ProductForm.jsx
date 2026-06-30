@@ -223,8 +223,8 @@ export default function ProductForm({
         }
     };
 
-    const handleSave = async (e) => {
-        e.preventDefault();
+    const handleSave = async (e, keepOpen = false) => {
+        e?.preventDefault();
         if (saving) return; // evita doble ejecución (doble clic / submit duplicado)
         const costVal = parseFloat(form.cost) || 0;
         const priceVal = parseFloat(form.price) || 0;
@@ -317,8 +317,27 @@ export default function ProductForm({
                         }
                     }
                 }
-                onClose();
                 showToast('Guardado correctamente ✓');
+                if (keepOpen && !editing) {
+                    // === Registro continuo: refrescar códigos usados y limpiar formulario ===
+                    // CRÍTICO: el producto recién guardado YA está en la BD pero existingRef
+                    // se cargó solo al montar. Hay que añadir los códigos recién usados al ref
+                    // para que el SIGUIENTE producto no regenere los mismos shortCodes/EANs.
+                    const justSaved = unitCodes || [];
+                    justSaved.forEach(({ barcode, shortCode }) => {
+                        if (barcode) existingRef.current.eans.add(barcode);
+                        const n = parseInt(shortCode, 10);
+                        if (n > 0) existingRef.current.nums.add(n);
+                    });
+                    // Limpiar formulario y estados visuales
+                    setForm({ ...EMPTY });
+                    setUnitCodes([]);
+                    stopCamera();           // por si la cámara quedó abierta
+                    // hacer scroll arriba para empezar el nuevo registro (si existe formScrollRef)
+                    if (formScrollRef?.current) formScrollRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                    onClose();
+                }
             } catch (err) {
                 showToast(err.message, 'error');
             }
@@ -540,10 +559,23 @@ export default function ProductForm({
                             className="px-10 py-5 border-2 rounded-3xl font-black text-pink-500">
                             CANCELAR
                         </button>
-                        <button type="submit" disabled={saving}
-                            className="flex-1 bg-gradient-to-r from-pink-600 to-rose-600 text-white font-black rounded-3xl shadow-xl disabled:opacity-50 disabled:cursor-not-allowed">
-                            {saving ? 'GUARDANDO…' : 'GUARDAR'}
-                        </button>
+                        {editing ? (
+                            <button type="button" onClick={(e) => handleSave(e, false)} disabled={saving}
+                                className="flex-1 bg-gradient-to-r from-pink-600 to-rose-600 text-white font-black rounded-3xl shadow-xl disabled:opacity-50 disabled:cursor-not-allowed">
+                                {saving ? 'GUARDANDO…' : 'ACTUALIZAR'}
+                            </button>
+                        ) : (
+                            <>
+                                <button type="button" onClick={(e) => handleSave(e, true)} disabled={saving}
+                                    className="flex-1 border-2 border-pink-300 bg-pink-50 text-pink-600 font-black rounded-3xl disabled:opacity-50 disabled:cursor-not-allowed">
+                                    {saving ? 'GUARDANDO…' : 'GUARDAR Y NUEVO'}
+                                </button>
+                                <button type="button" onClick={(e) => handleSave(e, false)} disabled={saving}
+                                    className="flex-1 bg-gradient-to-r from-pink-600 to-rose-600 text-white font-black rounded-3xl shadow-xl disabled:opacity-50 disabled:cursor-not-allowed">
+                                    {saving ? 'GUARDANDO…' : 'GUARDAR'}
+                                </button>
+                            </>
+                        )}
                     </div>
                 </div>
             </form>
