@@ -2,12 +2,14 @@ import React from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, generateBarcodesForProduct, getLocalISOString } from '../db';
 import { jsPDF } from 'jspdf';
-import { Boxes, AlertTriangle, TrendingDown, Package, Plus, X, CheckCircle, Printer, Filter, ArrowRightLeft } from 'lucide-react';
+import { Boxes, AlertTriangle, TrendingDown, Package, Plus, X, CheckCircle, Printer, Filter, ArrowRightLeft, Camera, Loader2, ImageOff } from 'lucide-react';
 import { useNotification } from '../hooks/useNotification';
 import { formatCurrency, drawPDFHeader } from '../utils';
 import { useAvailableStock } from '../hooks/useAvailableStock';
 import { useUser } from '../contexts/UserContext';
 import TransferModal from './TransferModal';
+import { getEmbedding, cosineSimilarity } from '../utils/garmentClassifier';
+import CameraCapture from './camera/CameraCapture';
 
 /**
  * Inventory — Control de stock actual y alertas de bajo stock
@@ -44,6 +46,12 @@ export default function Inventory() {
         showMsg(type === 'error' ? 'error' : 'success', text);
     }, [showMsg]);
 
+    // ── Búsqueda por foto (filtro visual sobre la misma tabla) ──
+    const [cameraActive, setCameraActive] = React.useState(false);
+    const [photoMatches, setPhotoMatches] = React.useState(null); // null = sin búsqueda activa
+    const [searching, setSearching] = React.useState(false);
+    const [noIndex, setNoIndex] = React.useState(false);
+
     const activeProducts = (products || []).filter(p => p.active !== false);
 
     const filtered = activeProducts.filter(p => {
@@ -53,6 +61,50 @@ export default function Inventory() {
         if (filterCat && p.category !== filterCat) return false;
         return true;
     });
+
+    // Cuando hay búsqueda por foto, la tabla muestra solo esas coincidencias
+    // (en orden de similitud); si no, el `filtered` normal de siempre.
+    const photoActive = photoMatches !== null;
+    const rows = photoActive ? photoMatches.map(m => m.product) : filtered;
+    const scoreById = photoActive
+        ? Object.fromEntries(photoMatches.map(m => [m.product.id, m.score]))
+        : {};
+    // Nº de columnas de la tabla (se suma 1 por la columna "Similitud" en modo foto).
+    const colCount = photoActive ? 10 : 9;
+
+    // Replica la lógica de ImageSearch.handleCapture, pero vuelca el resultado
+    // como filtro de la tabla de inventario.
+    const handlePhotoCapture = async ({ canvas }) => {
+        setCameraActive(false);
+        setNoIndex(false);
+        setSearching(true);
+        try {
+            const query = await getEmbedding(canvas);
+            const indexed = await db.products.where('hasEmbedding').equals(1).toArray();
+            if (indexed.length === 0) {
+                setNoIndex(true);
+                setPhotoMatches(null);
+                return;
+            }
+            const scored = indexed
+                .filter(p => Array.isArray(p.embedding) && p.embedding.length === query.length)
+                .map(p => ({ product: p, score: cosineSimilarity(query, p.embedding) }))
+                .sort((a, b) => b.score - a.score)
+                .slice(0, 5);
+            setPhotoMatches(scored);
+        } catch (err) {
+            console.error('Error en búsqueda por foto:', err);
+            showMsg('error', 'No se pudo procesar la imagen. Inténtalo de nuevo.');
+        } finally {
+            setSearching(false);
+        }
+    };
+
+    const clearPhotoSearch = () => {
+        setPhotoMatches(null);
+        setNoIndex(false);
+        setCameraActive(false);
+    };
 
     const totalProducts = activeProducts.length;
     const outOfStock = activeProducts.filter(p => p.stock <= 0).length;
@@ -260,6 +312,20 @@ export default function Inventory() {
                             {lbl}
                         </button>
                     ))}
+                    {/* Búsqueda por foto: abre la cámara o, si ya hay resultados, permite volver a todo */}
+                    {photoActive ? (
+                        <button onClick={clearPhotoSearch}
+                            className="px-4 py-2 rounded-xl text-sm font-semibold border border-pink-500 bg-pink-500 text-white flex items-center gap-1.5 transition-all hover:bg-pink-600">
+                            <X size={15} /> Quitar filtro de foto
+                        </button>
+                    ) : (
+                        <button onClick={() => { setNoIndex(false); setCameraActive(v => !v); }} disabled={searching}
+                            className={`px-4 py-2 rounded-xl text-sm font-semibold border flex items-center gap-1.5 transition-all disabled:opacity-50
+                                ${cameraActive ? 'border-pink-500 bg-pink-50 text-pink-700' : 'border-gray-200 text-gray-500 hover:border-pink-300'}`}>
+                            {searching ? <Loader2 size={15} className="animate-spin" /> : <Camera size={15} />}
+                            {searching ? 'Analizando…' : cameraActive ? 'Cerrar cámara' : 'Buscar por foto'}
+                        </button>
+                    )}
                 </div>
                 <div className="flex gap-2 items-center">
                     <Filter size={16} className="text-pink-400 shrink-0" />
@@ -274,6 +340,43 @@ export default function Inventory() {
                     </button>
                 </div>
             </div>
+
+            {/* Cámara para búsqueda por foto */}
+            {cameraActive && (
+                <div className="fashion-card p-6 mb-4">
+                    <CameraCapture onCapture={handlePhotoCapture} />
+                    <div className="flex justify-center mt-4">
+                        <button onClick={() => setCameraActive(false)}
+                            className="text-sm text-pink-500 hover:text-pink-700 font-semibold">
+                            Cancelar
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Aviso: no hay productos indexados para comparar */}
+            {noIndex && (
+                <div className="mb-4 flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+                    <AlertTriangle size={18} className="text-amber-500 shrink-0 mt-0.5" />
+                    <p className="text-sm text-amber-800">
+                        Ningún producto tiene aún huella visual para comparar. Registra productos con foto o usa{' '}
+                        <span className="font-semibold">Configuración → "Reindexar fotos para búsqueda"</span>.
+                    </p>
+                </div>
+            )}
+
+            {/* Banner de búsqueda por foto activa */}
+            {photoActive && (
+                <div className="mb-4 flex items-center justify-between gap-3 bg-pink-50 border border-pink-200 rounded-xl px-4 py-2.5">
+                    <p className="text-sm text-pink-700 flex items-center gap-2">
+                        <Camera size={15} /> Mostrando los {rows.length} productos más parecidos a la foto.
+                    </p>
+                    <button onClick={clearPhotoSearch}
+                        className="text-sm font-semibold text-pink-600 hover:text-pink-800 underline shrink-0">
+                        Ver todo
+                    </button>
+                </div>
+            )}
 
             {/* Tabla de inventario */}
             <div className="fashion-card flex-1 flex flex-col min-h-0 relative">
@@ -290,21 +393,37 @@ export default function Inventory() {
                                 <th className="px-4 py-3 font-semibold">Cód. Barras</th>
                                 <th className="px-4 py-3 font-semibold">Stock</th>
                                 <th className="px-4 py-3 font-semibold">Estado</th>
+                                {photoActive && <th className="px-4 py-3 font-semibold text-center">Similitud</th>}
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-pink-50">
-                            {filtered.length === 0 ? (
-                                <tr><td colSpan={9} className="py-12 text-center text-pink-300">
+                            {rows.length === 0 ? (
+                                <tr><td colSpan={colCount} className="py-12 text-center text-pink-300">
                                     <Package size={36} className="mx-auto mb-2 opacity-40" />
-                                    <p>No hay productos en esta categoría</p>
+                                    <p>{photoActive ? 'No se encontraron productos parecidos' : 'No hay productos en esta categoría'}</p>
                                 </td></tr>
-                            ) : filtered.map(p => (
+                            ) : rows.map(p => (
                                 <tr key={p.id} className="hover:bg-pink-50/50 transition-colors">
                                     <td className="px-4 py-3">
-                                        <p className="font-semibold text-pink-900">{p.name}</p>
-                                        <div className="flex gap-1 flex-wrap mt-0.5 mb-1">
-                                            {p.brand && <span className="text-[10px] font-semibold bg-gray-100 text-gray-600 px-1.5 rounded">{p.brand}</span>}
-                                            {p.extraData && <span className="text-[10px] font-semibold bg-amber-50 text-amber-600 px-1.5 rounded border border-amber-100" title="Datos Extras">{p.extraData}</span>}
+                                        <div className="flex items-center gap-3">
+                                            {/* Miniatura de la foto del producto (56x56) */}
+                                            {p.photo ? (
+                                                <div className="w-14 h-14 rounded-lg border border-pink-100 overflow-hidden flex-shrink-0">
+                                                    <img src={p.photo} alt={p.name} className="w-full h-full object-cover" />
+                                                </div>
+                                            ) : (
+                                                <div className="w-14 h-14 rounded-lg border border-gray-200 bg-gray-100 flex flex-col items-center justify-center flex-shrink-0 text-gray-300">
+                                                    <ImageOff size={18} />
+                                                    <span className="text-[8px] leading-none mt-0.5">sin foto</span>
+                                                </div>
+                                            )}
+                                            <div>
+                                                <p className="font-semibold text-pink-900">{p.name}</p>
+                                                <div className="flex gap-1 flex-wrap mt-0.5 mb-1">
+                                                    {p.brand && <span className="text-[10px] font-semibold bg-gray-100 text-gray-600 px-1.5 rounded">{p.brand}</span>}
+                                                    {p.extraData && <span className="text-[10px] font-semibold bg-amber-50 text-amber-600 px-1.5 rounded border border-amber-100" title="Datos Extras">{p.extraData}</span>}
+                                                </div>
+                                            </div>
                                         </div>
                                     </td>
                                     <td className="px-4 py-3">
@@ -354,6 +473,13 @@ export default function Inventory() {
                                                 ? <span className="badge-red">Bajo</span>
                                                 : <span className="badge-green">Disponible</span>}
                                     </td>
+                                    {photoActive && (
+                                        <td className="px-4 py-3 text-center">
+                                            <span className="inline-block px-3 py-1 rounded-full bg-green-50 border border-green-200 text-green-700 text-sm font-black">
+                                                {Math.round((scoreById[p.id] || 0) * 100)}%
+                                            </span>
+                                        </td>
+                                    )}
                                 </tr>
                             ))}
                         </tbody>

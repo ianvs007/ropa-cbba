@@ -1,7 +1,7 @@
 import React from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, generateUniqueBarcode, generateShortCode } from '../db';
-import { Plus, Edit2, Package, XCircle } from 'lucide-react';
+import { Plus, Edit2, Package, XCircle, ImageOff } from 'lucide-react';
 
 import { useAvailableStock } from '../hooks/useAvailableStock';
 import ProductForm, { EMPTY } from './ProductForm';
@@ -221,12 +221,27 @@ export default function ProductList() {
                         {displayList.map(p => (
                             <tr key={p.id} className="hover:bg-pink-50/50">
                                 <td className="px-4 py-3">
-                                    <p className="font-bold text-pink-900">{p.name}</p>
-                                    <div className="flex gap-1 flex-wrap mt-0.5 mb-1">
-                                        {p.brand && <span className="text-[10px] font-semibold bg-gray-100 text-gray-600 px-1.5 rounded">{p.brand}</span>}
-                                        {p.color && <span className="text-[10px] font-semibold bg-blue-50 text-blue-600 px-1.5 rounded border border-blue-100">{p.color}</span>}
-                                        {p.size && <span className="text-[10px] font-semibold bg-purple-50 text-purple-600 px-1.5 rounded border border-purple-100">{p.size}</span>}
-                                        {p.extraData && <span className="text-[10px] font-semibold bg-amber-50 text-amber-600 px-1.5 rounded border border-amber-100">{p.extraData}</span>}
+                                    <div className="flex items-center gap-3">
+                                        {/* Miniatura de la foto del producto (56x56) */}
+                                        {p.photo ? (
+                                            <div className="w-14 h-14 rounded-lg border border-pink-100 overflow-hidden flex-shrink-0">
+                                                <img src={p.photo} alt={p.name} className="w-full h-full object-cover" />
+                                            </div>
+                                        ) : (
+                                            <div className="w-14 h-14 rounded-lg border border-gray-200 bg-gray-100 flex flex-col items-center justify-center flex-shrink-0 text-gray-300">
+                                                <ImageOff size={18} />
+                                                <span className="text-[8px] leading-none mt-0.5">sin foto</span>
+                                            </div>
+                                        )}
+                                        <div>
+                                            <p className="font-bold text-pink-900">{p.name}</p>
+                                            <div className="flex gap-1 flex-wrap mt-0.5 mb-1">
+                                                {p.brand && <span className="text-[10px] font-semibold bg-gray-100 text-gray-600 px-1.5 rounded">{p.brand}</span>}
+                                                {p.color && <span className="text-[10px] font-semibold bg-blue-50 text-blue-600 px-1.5 rounded border border-blue-100">{p.color}</span>}
+                                                {p.size && <span className="text-[10px] font-semibold bg-purple-50 text-purple-600 px-1.5 rounded border border-purple-100">{p.size}</span>}
+                                                {p.extraData && <span className="text-[10px] font-semibold bg-amber-50 text-amber-600 px-1.5 rounded border border-amber-100">{p.extraData}</span>}
+                                            </div>
+                                        </div>
                                     </div>
                                 </td>
                                 <td className="px-4 py-3 text-center">

@@ -364,3 +364,40 @@ db.version(20).stores({
     securityLogs: '++id, timestamp, eventType, userId',
     cashOpenings: '++id, date, userId, openedAt',
 });
+
+// ==============================================================================
+// 📸 ESQUEMA v21 — BÚSQUEDA POR FOTO: índice de embeddings visuales
+// ==============================================================================
+// Se añade SOLO a la tabla products el índice `hasEmbedding` (0/1) para filtrar
+// rápido qué productos ya tienen vector visual. El vector en sí se guarda como
+// propiedad normal `embedding` (array de 1024 floats normalizados, NO indexada).
+// El resto de tablas se copian sin cambios desde v20.
+db.version(21).stores({
+    products: '++id, name, barcode, category, brand, size, color, stock, cost, price, shortCode, active, createdAt, hasEmbedding',
+    kardex: '++id, productId, date, type',
+    sales: '++id, date, total, sellerId, paymentMethod, status, shiftId',
+    expenseCategories: '++id, name',
+    expenses: '++id, date, categoryId, amount, paymentMethod, userId, registeredBy, shiftId',
+    users: '++id, username, role',
+    settings: 'key',
+    reservations: '++id, clientName, clientPhone, productId, status, createdAt, sellerId',
+    reservationPayments: '++id, reservationId, date, status, userId, shiftId',
+    categories: '++id, name',
+    productNames: '++id, name',
+    productFields: '++id, name, type',
+    barcodes: '++id, productId, barcode, shortCode, used, createdAt',
+    brands: '++id, name',
+    colors: '++id, name',
+    cashClosures: '++id, date, userId, closedAt, openingId',
+    cashClosureHistory: '++id, closureId, date, changedBy',
+    securityLogs: '++id, timestamp, eventType, userId',
+    cashOpenings: '++id, date, userId, openedAt',
+}).upgrade(async tx => {
+    // Backfill: los productos previos no tienen `hasEmbedding`. IndexedDB usa
+    // índices sparse (omite registros sin la propiedad), así que sin este relleno
+    // NO aparecerían en `.where('hasEmbedding').notEqual(1)` y el reindexado los
+    // ignoraría. Marcamos hasEmbedding=0 para que entren al índice.
+    return tx.products.toCollection().modify(p => {
+        if (p.hasEmbedding === undefined) p.hasEmbedding = 0;
+    });
+});

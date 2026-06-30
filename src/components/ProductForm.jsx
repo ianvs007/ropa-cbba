@@ -2,6 +2,7 @@ import React from 'react';
 import { X } from 'lucide-react';
 import { db, generateBarcode, generateBarcodesForProduct, getLocalISOString } from '../db';
 import TypeaheadInput from './ui/TypeaheadInput';
+import { getEmbedding } from '../utils/garmentClassifier';
 
 const SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'Talla Única',
     '6', '8', '10', '12', '14', '16', '18', '20', '22', '24',
@@ -163,6 +164,25 @@ export default function ProductForm({
         img.src = dataUrl;
     });
 
+    // Genera el embedding visual a partir de la foto guardada (dataURL).
+    // Carga la imagen en un elemento <img> y se la pasa a MobileNet.
+    // Devuelve null si no hay foto o si algo falla (no debe bloquear el guardado).
+    const buildEmbedding = (dataUrl) => new Promise(resolve => {
+        if (!dataUrl) { resolve(null); return; }
+        const img = new Image();
+        img.onload = async () => {
+            try {
+                const vec = await getEmbedding(img);
+                resolve(vec);
+            } catch (e) {
+                console.warn('No se pudo generar el embedding de la foto:', e);
+                resolve(null);
+            }
+        };
+        img.onerror = () => resolve(null);
+        img.src = dataUrl;
+    });
+
     const capturePhoto = async () => {
         const video = videoRef.current;
         const canvas = canvasRef.current;
@@ -193,6 +213,7 @@ export default function ProductForm({
             const resized = await resizeImage(rawData);
             
             change('photo', resized);
+
             stopCamera();
             showToast('✓ Foto capturada exitosamente');
         } catch (err) {
@@ -232,6 +253,23 @@ export default function ProductForm({
             stock: stockVal,
             updatedAt: new Date().toISOString(),
         };
+
+        // ── Embedding visual para "Buscar por foto" (no bloquea el guardado) ──
+        // Si hay foto, generamos su huella; si falla o no hay foto, hasEmbedding=0.
+        try {
+            const embedding = await buildEmbedding(form.photo);
+            if (embedding) {
+                data.embedding = embedding;
+                data.hasEmbedding = 1;
+            } else {
+                data.embedding = null; // limpia vector viejo si se quitó/falló la foto en edición
+                data.hasEmbedding = 0;
+            }
+        } catch (e) {
+            console.warn('Generación de embedding omitida:', e);
+            data.embedding = null;
+            data.hasEmbedding = 0;
+        }
 
         try {
             const autoAdd = async (table, val, extra = {}) => {
@@ -303,6 +341,7 @@ export default function ProductForm({
                         onChange={v => change('name', v.toUpperCase())}
                         options={nameOptions} required
                     />
+
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <TypeaheadInput label="Categoría" value={form.category}
                             onChange={v => change('category', v.toUpperCase())} options={categoryOptions} />

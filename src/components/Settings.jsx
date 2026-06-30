@@ -5,9 +5,10 @@ import { db, generateUniqueBarcode } from '../db';
 import {
     Settings as SettingsIcon, Save, CheckCircle, Printer,
     MessageSquare, FileSpreadsheet, Upload, Download,
-    AlertTriangle, Image, Trash2
+    AlertTriangle, Image, Trash2, Camera, Loader2
 } from 'lucide-react';
 import { useUser } from '../contexts/UserContext';
+import { getEmbedding } from '../utils/garmentClassifier';
 
 
 /**
@@ -21,6 +22,11 @@ export default function Settings() {
     const fileRef = React.useRef(null);
     const logoRef = React.useRef(null);
     const [logoError, setLogoError] = React.useState(null); // ── BUG FIX: Error de logo en UI ──
+
+    // ── Reindexado de fotos para "Buscar por foto" ──
+    const [reindexing, setReindexing] = React.useState(false);
+    const [reindexProgress, setReindexProgress] = React.useState({ done: 0, total: 0 });
+    const [reindexMsg, setReindexMsg] = React.useState(null);
 
     React.useEffect(() => {
         if (!settingsRaw) return;
@@ -42,6 +48,53 @@ export default function Settings() {
         }
         setSaved(true);
         setTimeout(() => setSaved(false), 3000);
+    };
+
+    // Carga un dataURL en un <img> y genera su embedding visual.
+    const embedFromPhoto = (dataUrl) => new Promise(resolve => {
+        const img = new window.Image();
+        img.onload = async () => {
+            try { resolve(await getEmbedding(img)); }
+            catch (e) { console.warn('Embedding falló:', e); resolve(null); }
+        };
+        img.onerror = () => resolve(null);
+        img.src = dataUrl;
+    });
+
+    // Indexa los productos con foto que aún no tienen huella visual.
+    const handleReindex = async () => {
+        setReindexMsg(null);
+        setReindexing(true);
+        try {
+            const pending = await db.products.where('hasEmbedding').notEqual(1).toArray();
+            const withPhoto = pending.filter(p => p.photo);
+            setReindexProgress({ done: 0, total: withPhoto.length });
+
+            if (withPhoto.length === 0) {
+                setReindexMsg('No hay productos con foto pendientes de indexar. ✓');
+                return;
+            }
+
+            let done = 0, ok = 0;
+            for (const p of withPhoto) {
+                try {
+                    const vec = await embedFromPhoto(p.photo);
+                    if (vec) { await db.products.update(p.id, { embedding: vec, hasEmbedding: 1 }); ok++; }
+                } catch (e) {
+                    console.warn('No se pudo indexar el producto', p.id, e);
+                }
+                done++;
+                setReindexProgress({ done, total: withPhoto.length });
+                // Cede el hilo entre productos para no congelar la UI.
+                await new Promise(r => setTimeout(r, 0));
+            }
+            setReindexMsg(`Indexación completada: ${ok} de ${withPhoto.length} productos. ✓`);
+        } catch (e) {
+            console.error('Error reindexando fotos:', e);
+            setReindexMsg('Error durante la indexación: ' + (e.message || e));
+        } finally {
+            setReindexing(false);
+        }
     };
 
     const textFields = [
@@ -261,6 +314,49 @@ export default function Settings() {
                     </button>
                 </div>
             </form>
+
+            {/* ── Búsqueda por foto: reindexar productos antiguos ── */}
+            <div className="fashion-card p-6 mt-4">
+                <h2 className="font-bold text-pink-900 mb-2 text-sm uppercase tracking-wide flex items-center gap-2">
+                    <Camera size={15} className="text-pink-500" /> Búsqueda por foto
+                </h2>
+                <p className="text-xs text-pink-400 mb-4">
+                    Genera la huella visual de los productos con foto que aún no la tienen, para que
+                    aparezcan en "Buscar por foto". Los productos nuevos se indexan solos al registrarlos.
+                </p>
+
+                {reindexing && reindexProgress.total > 0 && (
+                    <div className="mb-4">
+                        <div className="flex justify-between text-xs text-pink-600 font-semibold mb-1">
+                            <span>Indexando…</span>
+                            <span>{reindexProgress.done} de {reindexProgress.total}</span>
+                        </div>
+                        <div className="w-full h-2 bg-pink-100 rounded-full overflow-hidden">
+                            <div
+                                className="h-full bg-gradient-to-r from-pink-500 to-rose-500 transition-all duration-200"
+                                style={{ width: `${Math.round((reindexProgress.done / reindexProgress.total) * 100)}%` }}
+                            />
+                        </div>
+                    </div>
+                )}
+
+                {reindexMsg && !reindexing && (
+                    <div className="mb-4 flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-green-700 text-xs font-medium">
+                        <CheckCircle size={14} /> {reindexMsg}
+                    </div>
+                )}
+
+                <button
+                    type="button"
+                    onClick={handleReindex}
+                    disabled={reindexing}
+                    className="btn-secondary flex items-center gap-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                    {reindexing
+                        ? <><Loader2 size={14} className="animate-spin" /> Indexando…</>
+                        : <><Camera size={14} /> Reindexar fotos para búsqueda</>}
+                </button>
+            </div>
         </div>
     );
 }
