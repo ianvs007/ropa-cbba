@@ -1,6 +1,6 @@
 import React from 'react';
 import { X } from 'lucide-react';
-import { db, generateBarcodesForProduct, getLocalISOString } from '../db';
+import { db, generateBarcodesForProduct, generateUniqueBarcode, shortCodeExists, getLocalISOString } from '../db';
 
 /**
  * 📦 StockAdjustModal — Pantalla completa de suministro / ajuste de stock
@@ -14,12 +14,36 @@ export default function StockAdjustModal({ product, reservedMap, onClose, showTo
     const [adjQty, setAdjQty] = React.useState('');
     const [adjNote, setAdjNote] = React.useState('');
     const [adjType, setAdjType] = React.useState('entrada');
+    const [manualCode, setManualCode] = React.useState('');
 
     const reservedCount = reservedMap[product.id] || 0;
+
+    // El re-registro de traslado es unidad por unidad: solo aplica a entrada de 1 unidad
+    const allowManualCode = adjType === 'entrada' && parseInt(adjQty) === 1;
 
     const handleAdjust = async () => {
         const qty = parseInt(adjQty);
         if (!qty || qty <= 0) return;
+
+        // ── Re-registro de traslado: código corto manual (solo entrada de 1 unidad) ──
+        // Validamos y pre-generamos el EAN ANTES de la transacción, porque shortCodeExists
+        // y generateUniqueBarcode hacen lecturas asíncronas que conviene resolver fuera del tx.
+        const trimmedManual = manualCode.trim();
+        const useManualCode = adjType === 'entrada' && qty === 1 && trimmedManual !== '';
+        let manualEntry = null; // { shortCode, barcode }
+        if (useManualCode) {
+            try {
+                if (await shortCodeExists(trimmedManual)) {
+                    showToast('Ese código corto ya está en uso en esta sucursal', 'error');
+                    return;
+                }
+                const eanGenerado = await generateUniqueBarcode();
+                manualEntry = { shortCode: trimmedManual, barcode: eanGenerado };
+            } catch (err) {
+                showToast(err.message, 'error');
+                return;
+            }
+        }
 
         try {
             await db.transaction('rw', db.products, db.kardex, db.barcodes, db.reservations, async () => {
@@ -47,8 +71,20 @@ export default function StockAdjustModal({ product, reservedMap, onClose, showTo
                 // Calcular unitCodes ANTES de escribir el kardex para registrar los códigos exactos
                 let unitCodes = [];
                 if (adjType === 'entrada') {
-                    // generateBarcodesForProduct devuelve [{barcode, shortCode}]
-                    unitCodes = await generateBarcodesForProduct(product.id, qty);
+                    if (manualEntry) {
+                        // Re-registro de traslado: conservar el shortCode original, EAN nuevo
+                        await db.barcodes.add({
+                            productId: product.id,
+                            barcode: manualEntry.barcode,
+                            shortCode: manualEntry.shortCode,
+                            used: false,
+                            createdAt: getLocalISOString(),
+                        });
+                        unitCodes = [{ shortCode: manualEntry.shortCode, barcode: manualEntry.barcode }];
+                    } else {
+                        // generateBarcodesForProduct devuelve [{barcode, shortCode}]
+                        unitCodes = await generateBarcodesForProduct(product.id, qty);
+                    }
                 } else {
                     const toDelete = await db.barcodes
                         .where('productId').equals(product.id)
@@ -65,7 +101,9 @@ export default function StockAdjustModal({ product, reservedMap, onClose, showTo
                     date: getLocalISOString(),
                     type: adjType,
                     qty,
-                    notes: (adjNote.trim() || 'SUMINISTRO/AJUSTE MANUAL').toUpperCase(),
+                    notes: manualEntry
+                        ? `ENTRADA POR TRASLADO (CÓD. ${manualEntry.shortCode})`
+                        : (adjNote.trim() || 'SUMINISTRO/AJUSTE MANUAL').toUpperCase(),
                     balanceAfter: newStock,
                     unitCodes,
                 });
@@ -145,6 +183,24 @@ export default function StockAdjustModal({ product, reservedMap, onClose, showTo
                             placeholder="EJ: NUEVA MERCADERÍA, CORRECCIÓN..."
                         />
                     </div>
+
+                    {/* Re-registro de traslado: código corto manual (solo entrada de 1 unidad) */}
+                    {allowManualCode && (
+                        <div className="space-y-2 pt-2 border-t border-amber-100 fade-in">
+                            <label className="text-[11px] font-black text-amber-700 uppercase tracking-widest text-center block">
+                                Código corto manual (re-registro de traslado) · opcional
+                            </label>
+                            <input
+                                value={manualCode}
+                                onChange={e => setManualCode(e.target.value.trim())}
+                                className="fashion-input text-center font-black tracking-[0.2em] text-amber-700 placeholder:text-amber-200 border-amber-100 focus:border-amber-400"
+                                placeholder="00000"
+                            />
+                            <p className="text-[10px] text-amber-500 font-semibold text-center">
+                                Déjalo vacío para generar un código automático. Si lo llenas, se conserva el código original de la prenda trasladada.
+                            </p>
+                        </div>
+                    )}
                 </div>
             </div>
 
