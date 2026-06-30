@@ -2,10 +2,12 @@ import React from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, generateBarcodesForProduct, getLocalISOString } from '../db';
 import { jsPDF } from 'jspdf';
-import { Boxes, AlertTriangle, TrendingDown, Package, Plus, X, CheckCircle, Printer, Filter } from 'lucide-react';
+import { Boxes, AlertTriangle, TrendingDown, Package, Plus, X, CheckCircle, Printer, Filter, ArrowRightLeft } from 'lucide-react';
 import { useNotification } from '../hooks/useNotification';
 import { formatCurrency, drawPDFHeader } from '../utils';
 import { useAvailableStock } from '../hooks/useAvailableStock';
+import { useUser } from '../contexts/UserContext';
+import TransferModal from './TransferModal';
 
 /**
  * Inventory — Control de stock actual y alertas de bajo stock
@@ -33,7 +35,14 @@ export default function Inventory() {
 
     const [filter, setFilter] = React.useState('all');
     const [filterCat, setFilterCat] = React.useState('');
+    const [showTransfer, setShowTransfer] = React.useState(false);
     const { msg, showMsg } = useNotification();
+    const { user } = useUser();
+
+    // Adaptador: TransferModal usa showToast(text, type?) y aquí mostramos con showMsg(type, text)
+    const showToast = React.useCallback((text, type = 'success') => {
+        showMsg(type === 'error' ? 'error' : 'success', text);
+    }, [showMsg]);
 
     const activeProducts = (products || []).filter(p => p.active !== false);
 
@@ -179,6 +188,17 @@ export default function Inventory() {
         window.open(pdfUrl, '_blank');
     };
 
+    // ── Vista: Traslado a sucursal ──
+    if (showTransfer) {
+        return (
+            <TransferModal
+                user={user}
+                showToast={showToast}
+                onClose={() => setShowTransfer(false)}
+            />
+        );
+    }
+
     return (
         <div className="max-w-7xl mx-auto fade-in h-full flex flex-col">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5 shrink-0">
@@ -247,6 +267,11 @@ export default function Inventory() {
                         <option value="">Todas las Categorías</option>
                         {categoriesDB.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
                     </select>
+                    <button onClick={() => setShowTransfer(true)}
+                        className="px-4 py-2 rounded-xl text-sm font-semibold border border-amber-300 bg-amber-50 text-amber-700 hover:border-amber-500 transition-all flex items-center gap-2 shrink-0">
+                        <ArrowRightLeft size={16} />
+                        Trasladar a sucursal
+                    </button>
                 </div>
             </div>
 
