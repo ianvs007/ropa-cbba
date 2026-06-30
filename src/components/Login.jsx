@@ -31,7 +31,7 @@ export default function Login() {
                 setLoading(false);
                 return;
             }
-            login({ id: user.id, username: user.username, name: user.name, role: user.role });
+            login({ id: user.id, username: user.username, name: user.name, role: user.role, permissions: user.permissions || {} });
         } catch (err) {
             setError('Error de conexión con la base de datos');
         } finally {

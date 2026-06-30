@@ -3,15 +3,18 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
 import { Users as UsersIcon, User, Plus, Edit2, Trash2, X, CheckCircle, Shield, Eye, EyeOff } from 'lucide-react';
 import { hashPassword } from '../utils/crypto';
+import { useUser } from '../contexts/UserContext';
+import { PERMISSIONS, PERMISSION_LABELS } from '../utils/permissions';
 
 /**
  * Users — Gestión de usuarios del sistema (Admin / Vendedor)
  */
 export default function Users() {
+    const { user: loggedUser } = useUser();
     const users = useLiveQuery(() => db.users.toArray(), []);
     const [showForm, setShowForm] = React.useState(false);
     const [editing, setEditing] = React.useState(null);
-    const [form, setForm] = React.useState({ username: '', name: '', password: '', role: 'seller', active: true });
+    const [form, setForm] = React.useState({ username: '', name: '', password: '', role: 'seller', active: true, permissions: {} });
     const [msg, setMsg] = React.useState(null);
     const [delId, setDelId] = React.useState(null);
     const [showPass, setShowPass] = React.useState(false);
@@ -20,14 +23,14 @@ export default function Users() {
     const showMsg = (type, text) => { setMsg({ type, text }); setTimeout(() => setMsg(null), 3000); };
 
     const openEdit = (u) => {
-        setForm({ username: u.username || '', name: u.name || '', password: '', role: u.role || 'seller', active: u.active !== false });
+        setForm({ username: u.username || '', name: u.name || '', password: '', role: u.role || 'seller', active: u.active !== false, permissions: u.permissions || {} });
         setEditing(u.id);
         setShowForm(true);
     };
 
     const closeForm = () => {
         setShowForm(false); setEditing(null);
-        setForm({ username: '', name: '', password: '', role: 'seller', active: true });
+        setForm({ username: '', name: '', password: '', role: 'seller', active: true, permissions: {} });
     };
 
     const handleSave = async (e) => {
@@ -46,6 +49,9 @@ export default function Users() {
             name: form.name.trim().toUpperCase(),
             role: form.role,
             active: form.active,
+            // Permisos granulares: solo aplican a admins secundarios; para sellers
+            // se guarda {} (hasPermission devuelve false para no-admin igualmente).
+            permissions: form.role === 'admin' ? (form.permissions || {}) : {},
         };
         if (form.password) data.password = await hashPassword(form.password);
 
@@ -153,6 +159,33 @@ export default function Users() {
                                 </div>
                             </div>
                         </div>
+
+                        {/* ── Permisos granulares: solo el admin principal, sobre un admin
+                            secundario (nunca sobre el propio 'admin') ── */}
+                        {loggedUser?.username === 'admin'
+                            && form.role === 'admin'
+                            && form.username.trim().toLowerCase() !== 'admin' && (
+                            <div className="space-y-3 pt-6 border-t-2 border-pink-100/50">
+                                <label className="text-[10px] font-black text-pink-800 uppercase tracking-widest flex items-center gap-2">
+                                    <Shield size={12} className="text-pink-400" /> Permisos de Administrador
+                                </label>
+                                <p className="text-[10px] text-pink-400 font-bold tracking-wide">
+                                    Por defecto sin acceso. Tilda lo que este administrador podrá hacer.
+                                </p>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                    {Object.entries(PERMISSION_LABELS).map(([key, label]) => (
+                                        <label key={key}
+                                            className="flex items-center gap-3 px-4 py-3 rounded-2xl border border-pink-100 cursor-pointer hover:bg-pink-50/50 transition-colors">
+                                            <input type="checkbox"
+                                                checked={!!form.permissions?.[key]}
+                                                onChange={e => setForm(p => ({ ...p, permissions: { ...p.permissions, [key]: e.target.checked } }))}
+                                                className="w-4 h-4 accent-pink-600 shrink-0" />
+                                            <span className="text-xs font-bold text-pink-700">{label}</span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                     </div>
 
                     {/* Footer Flotante Acciones */}
