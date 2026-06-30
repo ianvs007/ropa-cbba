@@ -49,6 +49,7 @@ export default function ProductForm({
 
     // ── Códigos pre-generados (en memoria, no guardados hasta presionar Guardar) ──
     const [unitCodes, setUnitCodes] = React.useState([]);
+    const [saving, setSaving] = React.useState(false);
     // Ref con los sets de EANs y códigos cortos ya usados en la BD (cargados al montar)
     const existingRef = React.useRef({ eans: new Set(), nums: new Set() });
 
@@ -224,6 +225,7 @@ export default function ProductForm({
 
     const handleSave = async (e) => {
         e.preventDefault();
+        if (saving) return; // evita doble ejecución (doble clic / submit duplicado)
         const costVal = parseFloat(form.cost) || 0;
         const priceVal = parseFloat(form.price) || 0;
         const stockVal = parseInt(form.stock) || 0;
@@ -240,81 +242,88 @@ export default function ProductForm({
             }
         }
 
-        const data = {
-            ...form,
-            name: form.name.trim().toUpperCase(),
-            category: form.category.toUpperCase(),
-            brand: form.brand.toUpperCase(),
-            color: form.color?.toUpperCase() || '',
-            size: form.size?.toUpperCase() || '',
-            extraData: form.extraData?.trim() || '',
-            cost: costVal,
-            price: priceVal,
-            stock: stockVal,
-            updatedAt: new Date().toISOString(),
-        };
-
-        // ── Embedding visual para "Buscar por foto" (no bloquea el guardado) ──
-        // Si hay foto, generamos su huella; si falla o no hay foto, hasEmbedding=0.
+        // A partir de aquí empieza el trabajo async de guardado: bloqueamos el botón
+        // para impedir que un segundo submit cree un producto duplicado.
+        setSaving(true);
         try {
-            const embedding = await buildEmbedding(form.photo);
-            if (embedding) {
-                data.embedding = embedding;
-                data.hasEmbedding = 1;
-            } else {
-                data.embedding = null; // limpia vector viejo si se quitó/falló la foto en edición
-                data.hasEmbedding = 0;
-            }
-        } catch (e) {
-            console.warn('Generación de embedding omitida:', e);
-            data.embedding = null;
-            data.hasEmbedding = 0;
-        }
-
-        try {
-            const autoAdd = async (table, val, extra = {}) => {
-                if (!val) return;
-                const upperVal = val.trim().toUpperCase();
-                const exists = await table.where('name').equals(upperVal).first();
-                if (!exists) await table.add({ name: upperVal, ...extra });
+            const data = {
+                ...form,
+                name: form.name.trim().toUpperCase(),
+                category: form.category.toUpperCase(),
+                brand: form.brand.toUpperCase(),
+                color: form.color?.toUpperCase() || '',
+                size: form.size?.toUpperCase() || '',
+                extraData: form.extraData?.trim() || '',
+                cost: costVal,
+                price: priceVal,
+                stock: stockVal,
+                updatedAt: new Date().toISOString(),
             };
 
-            await Promise.all([
-                autoAdd(db.productNames, data.name),
-                autoAdd(db.categories, data.category),
-                autoAdd(db.brands, data.brand),
-                autoAdd(db.colors, data.color),
-                autoAdd(db.productFields, data.extraData, { type: 'text' }),
-            ]);
+            // ── Embedding visual para "Buscar por foto" (no bloquea el guardado) ──
+            // Si hay foto, generamos su huella; si falla o no hay foto, hasEmbedding=0.
+            try {
+                const embedding = await buildEmbedding(form.photo);
+                if (embedding) {
+                    data.embedding = embedding;
+                    data.hasEmbedding = 1;
+                } else {
+                    data.embedding = null; // limpia vector viejo si se quitó/falló la foto en edición
+                    data.hasEmbedding = 0;
+                }
+            } catch (e) {
+                console.warn('Generación de embedding omitida:', e);
+                data.embedding = null;
+                data.hasEmbedding = 0;
+            }
 
-            if (editing) {
-                await db.products.update(editing, data);
-            } else {
-                data.createdAt = new Date().toISOString();
-                const id = await db.products.add(data);
-                if (stockVal > 0) {
-                    await db.kardex.add({
-                        productId: id, type: 'entrada', qty: stockVal,
-                        notes: 'STOCK INICIAL', balanceAfter: stockVal,
-                        date: getLocalISOString(),
-                    });
-                    // Guardar exactamente los códigos pre-generados y mostrados al usuario
-                    const codesToSave = unitCodes.length === stockVal ? unitCodes
-                        : await generateBarcodesForProduct(id, stockVal).then(c => c);
-                    if (unitCodes.length === stockVal) {
-                        const now = getLocalISOString();
-                        await db.transaction('rw', db.barcodes, async () => {
-                            for (const { barcode, shortCode } of codesToSave) {
-                                await db.barcodes.add({ productId: id, barcode, shortCode, used: false, createdAt: now });
-                            }
+            try {
+                const autoAdd = async (table, val, extra = {}) => {
+                    if (!val) return;
+                    const upperVal = val.trim().toUpperCase();
+                    const exists = await table.where('name').equals(upperVal).first();
+                    if (!exists) await table.add({ name: upperVal, ...extra });
+                };
+
+                await Promise.all([
+                    autoAdd(db.productNames, data.name),
+                    autoAdd(db.categories, data.category),
+                    autoAdd(db.brands, data.brand),
+                    autoAdd(db.colors, data.color),
+                    autoAdd(db.productFields, data.extraData, { type: 'text' }),
+                ]);
+
+                if (editing) {
+                    await db.products.update(editing, data);
+                } else {
+                    data.createdAt = new Date().toISOString();
+                    const id = await db.products.add(data);
+                    if (stockVal > 0) {
+                        await db.kardex.add({
+                            productId: id, type: 'entrada', qty: stockVal,
+                            notes: 'STOCK INICIAL', balanceAfter: stockVal,
+                            date: getLocalISOString(),
                         });
+                        // Guardar exactamente los códigos pre-generados y mostrados al usuario
+                        const codesToSave = unitCodes.length === stockVal ? unitCodes
+                            : await generateBarcodesForProduct(id, stockVal).then(c => c);
+                        if (unitCodes.length === stockVal) {
+                            const now = getLocalISOString();
+                            await db.transaction('rw', db.barcodes, async () => {
+                                for (const { barcode, shortCode } of codesToSave) {
+                                    await db.barcodes.add({ productId: id, barcode, shortCode, used: false, createdAt: now });
+                                }
+                            });
+                        }
                     }
                 }
+                onClose();
+                showToast('Guardado correctamente ✓');
+            } catch (err) {
+                showToast(err.message, 'error');
             }
-            onClose();
-            showToast('Guardado correctamente ✓');
-        } catch (err) {
-            showToast(err.message, 'error');
+        } finally {
+            setSaving(false);
         }
     };
 
@@ -531,9 +540,9 @@ export default function ProductForm({
                             className="px-10 py-5 border-2 rounded-3xl font-black text-pink-500">
                             CANCELAR
                         </button>
-                        <button type="submit"
-                            className="flex-1 bg-gradient-to-r from-pink-600 to-rose-600 text-white font-black rounded-3xl shadow-xl">
-                            GUARDAR
+                        <button type="submit" disabled={saving}
+                            className="flex-1 bg-gradient-to-r from-pink-600 to-rose-600 text-white font-black rounded-3xl shadow-xl disabled:opacity-50 disabled:cursor-not-allowed">
+                            {saving ? 'GUARDANDO…' : 'GUARDAR'}
                         </button>
                     </div>
                 </div>
