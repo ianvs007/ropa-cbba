@@ -1,7 +1,7 @@
 import React from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
-import { History, ArrowDownCircle, ArrowUpCircle, Filter } from 'lucide-react';
+import { History, ArrowDownCircle, ArrowUpCircle, ArrowRightLeft, Filter } from 'lucide-react';
 
 /**
  * Kardex — Historial de movimientos de inventario
@@ -93,6 +93,7 @@ export default function Kardex() {
                         <option value="all">Todos los tipos</option>
                         <option value="entrada">Entradas</option>
                         <option value="salida">Salidas</option>
+                        <option value="traslado">Traslados</option>
                     </select>
                     <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
                         className="fashion-input" placeholder="Desde" />
@@ -132,23 +133,27 @@ export default function Kardex() {
                                     </td>
                                     <td className="px-4 py-3">
                                         {(() => {
-                                            const isEntrada = (m.type || '').toLowerCase() === 'entrada';
+                                            const type = (m.type || 'entrada').toLowerCase();
+                                            const isEntrada = type === 'entrada';
+                                            const isTraslado = type === 'traslado';
+                                            const color = isEntrada ? 'text-green-600' : isTraslado ? 'text-amber-600' : 'text-red-600';
+                                            const Icon = isEntrada ? ArrowDownCircle : isTraslado ? ArrowRightLeft : ArrowUpCircle;
                                             return (
-                                                <span className={`flex items-center gap-1 font-semibold text-xs
-                                                    ${isEntrada ? 'text-green-600' : 'text-red-600'}`}>
-                                                    {isEntrada
-                                                        ? <ArrowDownCircle size={14} />
-                                                        : <ArrowUpCircle size={14} />}
-                                                    {(m.type || 'entrada').charAt(0).toUpperCase() + (m.type || 'entrada').slice(1).toLowerCase()}
+                                                <span className={`flex items-center gap-1 font-semibold text-xs ${color}`}>
+                                                    <Icon size={14} />
+                                                    {type.charAt(0).toUpperCase() + type.slice(1)}
                                                 </span>
                                             );
                                         })()}
                                     </td>
                                     <td className="px-4 py-3">
                                         {(() => {
-                                            const isEntrada = (m.type || '').toLowerCase() === 'entrada';
+                                            const type = (m.type || 'entrada').toLowerCase();
+                                            const isEntrada = type === 'entrada';
+                                            const isTraslado = type === 'traslado';
+                                            const color = isEntrada ? 'text-green-600' : isTraslado ? 'text-amber-600' : 'text-red-600';
                                             return (
-                                                <span className={`font-bold ${isEntrada ? 'text-green-600' : 'text-red-600'}`}>
+                                                <span className={`font-bold ${color}`}>
                                                     {isEntrada ? '+' : '-'}{Math.abs(m.qty)}
                                                 </span>
                                             );
