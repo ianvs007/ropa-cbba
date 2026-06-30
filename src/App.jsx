@@ -1,6 +1,7 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { UserProvider, useUser } from './contexts/UserContext';
+import { hasPermission, PERMISSIONS } from './utils/permissions';
 
 // Layout & Auth
 import Layout from './components/Layout';
@@ -58,14 +59,14 @@ function AppRoutes() {
               <Route path="/monthly-report" element={<MonthlyReport />} />
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/sales" element={<SalesHistory />} />
-              <Route path="/products" element={<ProductList />} />
-              <Route path="/product-options" element={<ProductOptions />} />
-              <Route path="/mass-labeling" element={<MassLabeling />} />
+              <Route path="/products" element={hasPermission(user, PERMISSIONS.EDIT_PRODUCTS) ? <ProductList /> : <Navigate to="/dashboard" replace />} />
+              <Route path="/product-options" element={hasPermission(user, PERMISSIONS.EDIT_PRODUCTS) ? <ProductOptions /> : <Navigate to="/dashboard" replace />} />
+              <Route path="/mass-labeling" element={hasPermission(user, PERMISSIONS.EDIT_PRODUCTS) ? <MassLabeling /> : <Navigate to="/dashboard" replace />} />
               <Route path="/inventory" element={<Inventory />} />
               <Route path="/kardex" element={<Kardex />} />
-              <Route path="/users" element={<Users />} />
-              <Route path="/settings" element={<Settings />} />
-              <Route path="/backup" element={<Backup />} />
+              <Route path="/users" element={hasPermission(user, PERMISSIONS.MANAGE_USERS) ? <Users /> : <Navigate to="/dashboard" replace />} />
+              <Route path="/settings" element={hasPermission(user, PERMISSIONS.SETTINGS) ? <Settings /> : <Navigate to="/dashboard" replace />} />
+              <Route path="/backup" element={hasPermission(user, PERMISSIONS.BACKUP) ? <Backup /> : <Navigate to="/dashboard" replace />} />
               <Route path="/expenses" element={<Expenses />} />
 
               {/* Rutas antiguas/no permitidas para admin → dashboard */}

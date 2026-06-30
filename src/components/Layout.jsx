@@ -11,21 +11,25 @@ import { db, getLocalISOString } from '../db';
 import useCashRegister from '../hooks/useCashRegister';
 import CashOpenModal from './CashOpenModal';
 import { useUser } from '../contexts/UserContext';
+import { hasPermission, PERMISSIONS } from '../utils/permissions';
 
-/** Definición de navegación por rol */
+/** Definición de navegación por rol.
+ *  Los items con `perm` solo se muestran si el usuario tiene ese permiso
+ *  (el admin principal pasa siempre por hasPermission). Items sin `perm`
+ *  son visibles para todo admin. */
 const NAV_ADMIN = [
     { label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
     { label: 'Reporte Mensual', path: '/monthly-report', icon: Calendar },
     { label: 'Historial de ventas y gastos', path: '/sales', icon: ClipboardList },
-    { label: 'Productos', path: '/products', icon: Package },
-    { label: 'Catálogo Base', path: '/product-options', icon: ListTree },
-    { label: 'Etiquetado Masivo', path: '/mass-labeling', icon: Tag },
+    { label: 'Productos', path: '/products', icon: Package, perm: PERMISSIONS.EDIT_PRODUCTS },
+    { label: 'Catálogo Base', path: '/product-options', icon: ListTree, perm: PERMISSIONS.EDIT_PRODUCTS },
+    { label: 'Etiquetado Masivo', path: '/mass-labeling', icon: Tag, perm: PERMISSIONS.EDIT_PRODUCTS },
     { label: 'Inventario', path: '/inventory', icon: Boxes },
     { label: 'Movimientos', path: '/kardex', icon: History },
-    { label: 'Usuarios', path: '/users', icon: Users },
+    { label: 'Usuarios', path: '/users', icon: Users, perm: PERMISSIONS.MANAGE_USERS },
     { label: 'Gastos', path: '/expenses', icon: Receipt },
-    { label: 'Configuración', path: '/settings', icon: Settings },
-    { label: 'Backup', path: '/backup', icon: Database },
+    { label: 'Configuración', path: '/settings', icon: Settings, perm: PERMISSIONS.SETTINGS },
+    { label: 'Backup', path: '/backup', icon: Database, perm: PERMISSIONS.BACKUP },
 ];
 
 const NAV_SELLER = [
@@ -85,7 +89,10 @@ export default function Layout({ children }) {
     // Prioridad de modales: 1) Cierres pendientes, 2) Apertura de caja
     const showCashOpenModal = needsCashOpen && !showPendingModal;
 
-    const nav = user.role === 'admin' ? NAV_ADMIN : NAV_SELLER;
+    // Items con `perm` se filtran por permiso; los sin `perm` siempre se muestran.
+    // El admin principal ve todo (hasPermission devuelve true para username 'admin').
+    const nav = (user.role === 'admin' ? NAV_ADMIN : NAV_SELLER)
+        .filter(item => !item.perm || hasPermission(user, item.perm));
 
     return (
         <div className="flex h-screen overflow-hidden" style={{ background: 'var(--cream)' }}>
