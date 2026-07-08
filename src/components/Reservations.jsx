@@ -245,6 +245,14 @@ export default function Reservations() {
         return m;
     }, [products]);
 
+    // ── Mapa groupId → cantidad de prendas del grupo (reservas agrupadas) ──
+    // Las reservas antiguas sin groupId no entran aquí y se muestran como siempre
+    const groupCounts = React.useMemo(() => {
+        const m = {};
+        (reservations || []).forEach(r => { if (r.groupId) m[r.groupId] = (m[r.groupId] || 0) + 1; });
+        return m;
+    }, [reservations]);
+
     // ── Filtros de lista ──
     const filtered = React.useMemo(() => {
         if (!reservations) return [];
@@ -970,6 +978,11 @@ No se pueden alterar registros de días cerrados.`);
                                             <div className="min-w-0">
                                                 <h3 className="font-black text-pink-900 text-lg leading-tight truncate uppercase tracking-tight">{r.clientName}</h3>
                                                 <p className="text-[10px] font-black text-pink-300 uppercase tracking-widest mt-1">RESERVA #{r.id}</p>
+                                                {r.groupId && groupCounts[r.groupId] > 1 && (
+                                                    <span className="inline-flex items-center gap-1 mt-1.5 text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-lg bg-purple-100 text-purple-700 border border-purple-200">
+                                                        <Package size={10} strokeWidth={2.5} /> Grupo de {groupCounts[r.groupId]} prendas
+                                                    </span>
+                                                )}
                                             </div>
                                             <span className={`shrink-0 ml-2 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-xl shadow-sm
                                                 ${st.cls === 'badge-blue' ? 'bg-blue-600 text-white' : ''}
