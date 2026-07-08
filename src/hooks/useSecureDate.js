@@ -125,7 +125,11 @@ export function useSecureDate() {
                 break;
         }
 
-        sessionStorage.setItem('lastKnownTimestamp', String(nowTs));
+        // En MANIPULATION no se avanza el timestamp: la evidencia del último
+        // reloj legítimo debe sobrevivir a recargas de página
+        if (result.action !== 'MANIPULATION') {
+            sessionStorage.setItem('lastKnownTimestamp', String(nowTs));
+        }
         return result.action !== 'MANIPULATION';
     }, [logSecurityEvent]);
 

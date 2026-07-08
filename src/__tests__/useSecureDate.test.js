@@ -114,6 +114,29 @@ describe('evaluateDateChange', () => {
         expect(result.action).toBe('FREEZE');
     });
 
+    it('(e) tras una MANIPULATION el timestamp conocido no avanza: una recarga con el reloj aún retrocedido sigue detectándose', () => {
+        // Primera evaluación: reloj retrocedido 30 min → manipulación
+        const first = evaluateDateChange({
+            frozenDate: '2026-07-08',
+            lastKnownTs: T0,
+            nowTs: T0 - 30 * MINUTE,
+            nowDate: '2026-07-08',
+        });
+        expect(first.action).toBe('MANIPULATION');
+
+        // El hook NO avanza lastKnownTimestamp en MANIPULATION, así que tras
+        // recargar la página la evidencia sigue siendo T0 (no el reloj falso).
+        // Segunda evaluación (post-recarga, reloj aún retrocedido) → sigue detectando.
+        const second = evaluateDateChange({
+            frozenDate: '2026-07-08',
+            lastKnownTs: T0, // ← evidencia preservada, no T0 - 30min
+            nowTs: T0 - 29 * MINUTE,
+            nowDate: '2026-07-08',
+        });
+        expect(second.action).toBe('MANIPULATION');
+        expect(second.diffMinutes).toBe(29);
+    });
+
     it('(d2) sin lastKnownTimestamp guardado (sesión vieja) no marca manipulación', () => {
         // Sesiones creadas antes de este fix no tienen lastKnownTimestamp:
         // debe tratarse como avance/OK, nunca como fraude.
