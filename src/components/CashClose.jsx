@@ -1,9 +1,12 @@
 import React from 'react';
+import { useLocation } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { 
-    db, calculateClosureData, recordCashClosureChange, 
-    automaticcorrectDataIntegrity, getLocalISOString 
+import {
+    db, calculateClosureData, recordCashClosureChange,
+    automaticcorrectDataIntegrity, getLocalISOString
 } from '../db';
+import { usePendingClosureDates } from '../hooks/usePendingClosureDates';
+import { canCloseCashDate } from '../utils/pendingClosures';
 import {
     DollarSign, TrendingUp, Receipt, Package, CheckCircle,
     AlertTriangle, Printer, ChevronRight, Wallet, CreditCard,
@@ -26,16 +29,23 @@ export default function CashClose() {
     const { shiftId: activeShiftId, opening: activeOpening, shiftNumber } = useCashRegister();
     
     // ── Estados ────────────────────────────────────────────────────────
-    const [date, setDate] = React.useState(frozenToday || getLocalISOString().slice(0, 10));  
+    const [date, setDate] = React.useState(frozenToday || getLocalISOString().slice(0, 10));
     const [selectedShiftId, setSelectedShiftId] = React.useState(null);
+    // Cierre retroactivo a nivel día (fecha pendiente SIN apertura de turno):
+    // fuerza currentShiftId = null para que el cálculo no use el turno de hoy
+    const [dayLevelRetro, setDayLevelRetro] = React.useState(false);
     const [step, setStep] = React.useState(1);
 
-    // Sincronizar fecha si frozenToday tarda en cargar
+    // Sincronizar fecha si frozenToday tarda en cargar (sin pisar una
+    // selección activa de turno pendiente o día retroactivo)
     React.useEffect(() => {
-        if (frozenToday && date !== frozenToday) {
+        if (frozenToday && date !== frozenToday && !selectedShiftId && !dayLevelRetro) {
             setDate(frozenToday);
         }
     }, [frozenToday]);
+
+    // ── Fechas con cierre pendiente (misma fuente que el banner) ──
+    const pendingCloseDates = usePendingClosureDates(frozenToday);
 
     // Datos del arqueo
     const [cashStart, setCashStart] = React.useState('');
@@ -51,8 +61,9 @@ export default function CashClose() {
     const settings = useLiveQuery(() => db.settings.toArray(), []);
     const currency = settings?.find(s => s.key === 'currency')?.value || 'Bs.';
 
-    // El turno actual: usa selectedShiftId (para pendientes) o activeShiftId (turno activo)
-    const currentShiftId = selectedShiftId || activeShiftId;
+    // El turno actual: selectedShiftId (turno pendiente elegido), o null en modo
+    // día retroactivo (cálculo a nivel día), o activeShiftId (turno activo de hoy)
+    const currentShiftId = selectedShiftId || (dayLevelRetro ? null : activeShiftId);
 
     // ── Datos del turno ──────────────────────────────────────────────────
     const salesData = useLiveQuery(
@@ -139,7 +150,40 @@ export default function CashClose() {
         }
     }, [activeShiftId]);
 
-    const pendingDates = (pendingShifts || []);
+    // ── Seleccionar un día pendiente para cerrarlo ──
+    // Si el día tiene apertura de turno sin cierre, se reutiliza el flujo de
+    // turno pendiente (fondo de inicio + openingId). Si no la tiene (solo
+    // ventas/abonos), se cierra a nivel día con dayLevelRetro.
+    const selectPendingDay = React.useCallback((d) => {
+        const shift = (pendingShifts || []).find(s => s.date === d);
+        setDate(d);
+        if (shift) {
+            setSelectedShiftId(shift.id);
+            setDayLevelRetro(false);
+            setCashStart(shift.cashStart?.toString() || '');
+        } else {
+            setSelectedShiftId(null);
+            setDayLevelRetro(true);
+            setCashStart('');
+        }
+        setCashCount('');
+        setNotes('');
+        setExistingId(null);
+        setIsEditing(false);
+        setStep(1);
+    }, [pendingShifts]);
+
+    // ── Preselección al llegar desde el banner (state del router) ──
+    const location = useLocation();
+    const appliedNavRef = React.useRef(false);
+    React.useEffect(() => {
+        const target = location.state?.pendingDate;
+        if (!target || appliedNavRef.current) return;
+        // Esperar a que carguen ambas fuentes antes de decidir
+        if (pendingShifts === undefined || pendingCloseDates === undefined) return;
+        appliedNavRef.current = true;
+        if (pendingCloseDates.includes(target)) selectPendingDay(target);
+    }, [location.state, pendingShifts, pendingCloseDates, selectPendingDay]);
     // ── SEGURIDAD: Bloquear si hay manipulación detectada ──────────
     React.useEffect(() => {
         if (isManipulated) {
@@ -244,6 +288,26 @@ export default function CashClose() {
             return;
         }
 
+        // ── Autorización por fecha: hoy = normal; pasada pendiente = retroactivo;
+        //    futura = bloqueada. La edición de un cierre existente (existingId)
+        //    conserva su flujo/flag original.
+        const evaluation = canCloseCashDate({
+            selectedDate: date,
+            today: frozenToday,
+            pendingDates: pendingCloseDates || [],
+        });
+        if (!existingId && !evaluation.allowed) {
+            showMsg('error', `⚠️ ${evaluation.reason}`);
+            return;
+        }
+        const isRetro = existingId ? !!existing?.retroactive : evaluation.retroactive;
+
+        const RETRO_NOTE = 'CIERRE RETROACTIVO — regularización';
+        let finalNotes = notes.trim().toUpperCase();
+        if (isRetro && !finalNotes.includes('CIERRE RETROACTIVO')) {
+            finalNotes = finalNotes ? `${RETRO_NOTE} | ${finalNotes}` : RETRO_NOTE;
+        }
+
         const data = {
             date,
             userId: user?.id,
@@ -261,7 +325,8 @@ export default function CashClose() {
             expensesCount: salesData.expensesCount,
             itemsSold: salesData.itemsSold,
             cashOnHand: countNum,
-            notes: notes.trim().toUpperCase(),
+            notes: finalNotes,
+            retroactive: isRetro || undefined,
             closedBy: user?.name || user?.username,
             closedAt: new Date().toISOString(),
             cashDifference,
@@ -356,52 +421,50 @@ export default function CashClose() {
                 </div>
             </div>
 
-            {/* ── Alerta de Turnos Pendientes de Cierre ── */}
-            {pendingDates.length > 0 && !selectedShiftId && (
+            {/* ── Días pendientes de cierre (ventas/abonos o turnos sin cerrar) ── */}
+            {(pendingCloseDates || []).length > 0 && !selectedShiftId && !dayLevelRetro && (
                 <div className="bg-red-50 border-2 border-red-200 rounded-2xl p-5 shadow-sm">
                     <div className="flex items-center gap-3 mb-3">
                         <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center shrink-0">
                             <AlertTriangle size={20} className="text-red-600" />
                         </div>
                         <div>
-                            <h3 className="font-bold text-red-800 text-sm">⚠️ Turnos Sin Cerrar</h3>
-                            <p className="text-red-500 text-xs">Tienes {pendingDates.length} turno(s) sin cierre. Selecciona uno para cerrarlo.</p>
+                            <h3 className="font-bold text-red-800 text-sm">⚠️ Días pendientes de cierre</h3>
+                            <p className="text-red-500 text-xs">Tienes {pendingCloseDates.length} día(s) sin cerrar caja. Selecciona uno para regularizarlo.</p>
                         </div>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                        {pendingDates.map(shift => (
-                            <button
-                                key={shift.id}
-                                onClick={() => {
-                                    setDate(shift.date);
-                                    setSelectedShiftId(shift.id);
-                                    setCashStart(shift.cashStart?.toString() || '');
-                                    setCashCount('');
-                                    setNotes('');
-                                    setExistingId(null);
-                                    setIsEditing(false);
-                                    setStep(1);
-                                }}
-                                className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white text-xs font-bold rounded-xl hover:bg-red-700 transition shadow-sm"
-                            >
-                                <Receipt size={14} />
-                                {new Date(shift.date + 'T12:00:00').toLocaleDateString('es', { weekday: 'short', day: 'numeric', month: 'short' })}
-                                {' • '}
-                                {new Date(shift.openedAt).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}
-                            </button>
-                        ))}
+                        {pendingCloseDates.map(d => {
+                            const shift = (pendingShifts || []).find(s => s.date === d);
+                            return (
+                                <button
+                                    key={d}
+                                    onClick={() => selectPendingDay(d)}
+                                    className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white text-xs font-bold rounded-xl hover:bg-red-700 transition shadow-sm"
+                                >
+                                    <Receipt size={14} />
+                                    {new Date(d + 'T12:00:00').toLocaleDateString('es', { weekday: 'short', day: 'numeric', month: 'short' })}
+                                    {shift && ` • ${new Date(shift.openedAt).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}`}
+                                    <span className="opacity-75">— Cerrar este día</span>
+                                </button>
+                            );
+                        })}
                     </div>
                 </div>
             )}
 
-            {/* Info de turno pendiente seleccionado */}
-            {selectedShiftId && (
+            {/* Info de turno/día pendiente seleccionado */}
+            {(selectedShiftId || dayLevelRetro) && (
                 <div className="flex items-center gap-3 bg-orange-50 border border-orange-200 p-3 rounded-xl">
-                    <span className="text-orange-600 text-xs font-bold">📅 Cerrando turno pendiente del {new Date(date + 'T12:00:00').toLocaleDateString('es', { day: 'numeric', month: 'long' })}</span>
+                    <span className="text-orange-600 text-xs font-bold">
+                        📅 Cerrando {selectedShiftId ? 'turno' : 'día'} pendiente del {new Date(date + 'T12:00:00').toLocaleDateString('es', { day: 'numeric', month: 'long' })}
+                        {' '}(cierre retroactivo — quedará auditado)
+                    </span>
                     <button
                         onClick={() => {
                             setDate(frozenToday || getLocalISOString().slice(0, 10));
                             setSelectedShiftId(null);
+                            setDayLevelRetro(false);
                             setCashStart('');
                             setCashCount('');
                             setNotes('');
