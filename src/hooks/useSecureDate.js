@@ -1,13 +1,23 @@
 /**
  * 🔐 useSecureDate — Hook para Validación de Fecha Segura
- * 
- * Congela la fecha al login y detecta manipulaciones del SO
- * Previene cambios de fecha para anular ventas antiguas o crear cierres falsos
+ *
+ * Congela la fecha de trabajo en sessionStorage y detecta manipulaciones del SO.
+ * Previene retroceder el reloj para anular ventas antiguas o crear cierres falsos.
+ *
+ * El avance natural de día (medianoche con la app abierta) NO es manipulación:
+ * la fecha congelada se re-congela sola a la fecha nueva (rollover). Solo el
+ * RETROCESO del reloj (más allá de la tolerancia) dispara isManipulated.
  */
 
 import { useState, useEffect, useCallback } from 'react';
 import { db } from '../db';
 import { useUser } from '../contexts/UserContext';
+
+// Tolerancia para retroceso de reloj (drift/NTP legítimo): 10 minutos
+const ROLLBACK_TOLERANCE_MS = 10 * 60 * 1000;
+
+// Frecuencia de verificación con la app abierta
+const CHECK_INTERVAL_MS = 60 * 1000;
 
 // La función getLocalISOString se puede copiar aquí para evitar circulares
 function getLocalISOString() {
@@ -17,8 +27,39 @@ function getLocalISOString() {
 }
 
 /**
+ * Lógica pura de decisión sobre el cambio de fecha/reloj (testeable sin DOM).
+ *
+ * @param {Object} params
+ * @param {string|null} params.frozenDate  Fecha congelada YYYY-MM-DD
+ * @param {number|null} params.lastKnownTs Último Date.now() conocido (ms)
+ * @param {number} params.nowTs            Date.now() actual (ms)
+ * @param {string} params.nowDate          Fecha local actual YYYY-MM-DD
+ * @returns {{action: 'FREEZE'|'MANIPULATION'|'ROLLOVER'|'OK', from?: string, to?: string, diffMinutes?: number}}
+ */
+export function evaluateDateChange({ frozenDate, lastKnownTs, nowTs, nowDate }) {
+    if (!frozenDate) {
+        return { action: 'FREEZE' };
+    }
+
+    // ❌ RETROCESO de reloj más allá de la tolerancia → fraude
+    if (lastKnownTs != null && nowTs < lastKnownTs - ROLLBACK_TOLERANCE_MS) {
+        return {
+            action: 'MANIPULATION',
+            diffMinutes: Math.round((lastKnownTs - nowTs) / 60000),
+        };
+    }
+
+    // ✅ AVANCE natural de día (medianoche con la app abierta) → re-congelar
+    if (nowDate > frozenDate) {
+        return { action: 'ROLLOVER', from: frozenDate, to: nowDate };
+    }
+
+    return { action: 'OK' };
+}
+
+/**
  * Hook: Congelador de fecha + detector de manipulación
- * @returns {Object} { today, isManipulated, originalTime, canEdit }
+ * @returns {Object} { today, isManipulated, manipulationAttempts, verifyIntegrity, logEvent, canPerformAction }
  */
 export function useSecureDate() {
     const { user } = useUser();
@@ -26,52 +67,7 @@ export function useSecureDate() {
     const [isManipulated, setIsManipulated] = useState(false);
     const [manipulationAttempts, setManipulationAttempts] = useState(0);
 
-    // ── FASE 1: Congelar fecha al inicializar el hook ──
-    useEffect(() => {
-        const stored = sessionStorage.getItem('sessionDateFrozen');
-        
-        if (stored) {
-            // Ya existe sesión congelada, verificar integridad
-            verifyDateIntegrity(stored);
-        } else {
-            // Primera vez: congelar fecha actual (LOCAL)
-            const frozenDate = getLocalISOString().slice(0, 10);
-            sessionStorage.setItem('sessionDateFrozen', frozenDate);
-            setSessionDateFrozen(frozenDate);
-        }
-    }, []);
-
-    // ── FASE 2: Verificar si hubo cambio grande de fecha ──
-    const verifyDateIntegrity = useCallback((frozenDate) => {
-        const now = new Date();
-        const nowDate = getLocalISOString().slice(0, 10);
-        
-        // Comparar
-        const frozen = new Date(frozenDate + 'T00:00:00Z');
-        const current = new Date(nowDate + 'T00:00:00Z');
-        const diffMs = Math.abs(current.getTime() - frozen.getTime());
-        const diffHours = diffMs / (1000 * 60 * 60);
-
-        // ❌ ALERTA: Si diferencia > 1 hora (gran cambio)
-        if (diffHours > 1) {
-
-            setIsManipulated(true);
-            setManipulationAttempts(prev => prev + 1);
-            
-            // Registrar en auditoría
-            logSecurityEvent('DATE_MANIPULATION_DETECTED', {
-                frozenDate,
-                currentDate: nowDate,
-                diffHours: diffHours.toFixed(1),
-            });
-
-            return false;
-        }
-
-        return true;
-    }, []);
-
-    // ── FASE 3: Función para registrar eventos de seguridad ──
+    // ── Registrar eventos de seguridad en auditoría ──
     const logSecurityEvent = useCallback(async (eventType, details) => {
         try {
             // Crear tabla de logs si no existe
@@ -92,9 +88,62 @@ export function useSecureDate() {
         }
     }, [sessionDateFrozen]);
 
+    // ── Evaluar estado del reloj/fecha y aplicar la acción que corresponda ──
+    const runCheck = useCallback(() => {
+        const nowTs = Date.now();
+        const nowDate = getLocalISOString().slice(0, 10);
+        const frozenDate = sessionStorage.getItem('sessionDateFrozen');
+        const lastKnownRaw = sessionStorage.getItem('lastKnownTimestamp');
+        const lastKnownTs = lastKnownRaw ? Number(lastKnownRaw) : null;
+
+        const result = evaluateDateChange({ frozenDate, lastKnownTs, nowTs, nowDate });
+
+        switch (result.action) {
+            case 'FREEZE':
+                sessionStorage.setItem('sessionDateFrozen', nowDate);
+                setSessionDateFrozen(nowDate);
+                break;
+
+            case 'MANIPULATION':
+                setIsManipulated(true);
+                setManipulationAttempts(prev => prev + 1);
+                logSecurityEvent('DATE_MANIPULATION_DETECTED', {
+                    frozenDate,
+                    currentDate: nowDate,
+                    diffMinutes: result.diffMinutes,
+                });
+                break;
+
+            case 'ROLLOVER':
+                // Cambio natural de día: re-congelar, es informativo (no fraude)
+                sessionStorage.setItem('sessionDateFrozen', result.to);
+                setSessionDateFrozen(result.to);
+                logSecurityEvent('DATE_ROLLOVER', { from: result.from, to: result.to });
+                break;
+
+            default:
+                break;
+        }
+
+        sessionStorage.setItem('lastKnownTimestamp', String(nowTs));
+        return result.action !== 'MANIPULATION';
+    }, [logSecurityEvent]);
+
+    // ── Verificación al montar + cada minuto mientras la app sigue abierta ──
+    useEffect(() => {
+        runCheck();
+        const intervalId = setInterval(runCheck, CHECK_INTERVAL_MS);
+        return () => clearInterval(intervalId);
+    }, [runCheck]);
+
+    // ── Verificación bajo demanda: solo marca manipulación en RETROCESO ──
+    const verifyDateIntegrity = useCallback(() => {
+        return runCheck();
+    }, [runCheck]);
+
     // ── Retornar objeto con métodos seguros ──
     return {
-        today: sessionDateFrozen,  // ← CONGELADA
+        today: sessionDateFrozen,  // ← CONGELADA (se re-congela sola al cambiar el día)
         isManipulated,
         manipulationAttempts,
         verifyIntegrity: verifyDateIntegrity,
