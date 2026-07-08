@@ -52,7 +52,7 @@ tiene su propia base de datos local (sin servidor, sin sincronización).
 
 ## Registro de actualizaciones — Julio 2026
 
-### ✅ En producción (main, zips v1 y v2 desplegados el 08/07/2026)
+### ✅ En producción (main, zips v1, v2 y v3 — 08/07/2026)
 
 1. **Fix fecha congelada y falsas alertas de manipulación**
    (`03bb727`..`d8af5b4`, zip `ropa-cbba-fix-fecha-20260708.zip`):
@@ -64,10 +64,9 @@ tiene su propia base de datos local (sin servidor, sin sincronización).
    abono proporcional con cuadre exacto, badge "Grupo de N prendas",
    retrocompatibilidad total con reservas de una prenda.
 
-### 🔶 Pendiente de merge — rama `feature/aviso-cierres-pendientes`
-
-Validada en prueba manual (todas las cajas pendientes regularizadas); falta
-merge a main + build + **zip v3** tras probar el aviso al salir.
+Los items 3-5 (rama `feature/aviso-cierres-pendientes`, validada en prueba
+manual) se consolidaron en main con el build `43c8358` y se despliegan con el
+zip **`ropa-cbba-v3-cierres-pendientes-20260708.zip`**:
 
 3. **Banner persistente de cierres pendientes** (`9db6944`, `bf77d7a`):
    banner rojo no descartable en todas las pantallas; detección por movimientos
@@ -91,7 +90,6 @@ merge a main + build + **zip v3** tras probar el aviso al salir.
 
 ### 🔜 Posibles siguientes pasos (no comprometidos)
 
-- Merge de la rama pendiente + build + zip v3.
 - Vista admin de cierres retroactivos / abrir `/cash` a admins.
 - Bloqueo progresivo del POS con >N días pendientes (descartado por ahora).
 - Pasada de consistencia de `toLocaleDateString()` sin locale en
