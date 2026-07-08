@@ -1,4 +1,5 @@
 import { db } from './schema';
+import { filterClosureMovements } from '../utils/closureMovements';
 
 // ==============================================================================
 // 🔧 HELPERS — Funciones utilitarias de base de datos
@@ -426,44 +427,27 @@ export async function deleteEntireDatabase() {
  * Calcula todos los totales para un cierre de caja en una fecha específica.
  * @param {string} date - Fecha en formato YYYY-MM-DD
  */
-export async function calculateClosureData(date, userId = null, shiftId = null) {
+export async function calculateClosureData(date, userId = null, shiftId = null, options = {}) {
     if (!date) return null;
     try {
-        // ── FILTRADO POR USUARIO (Opcional) ──
-        let [sales, resPayments, expenses] = await Promise.all([
+        const [rawSales, rawResPayments, rawExpenses] = await Promise.all([
             db.sales.where('date').startsWith(date).toArray(),
             db.reservationPayments.where('date').startsWith(date).toArray(),
             db.expenses.where('date').startsWith(date).toArray()
         ]);
 
-        // 🚨 BLOQUEO DE SEGURIDAD ABSOLUTO PARA TURNOS 🚨
-        if (userId !== null && userId !== undefined && userId !== "") {
-            const uidStr = userId.toString();
-            sales = (sales || []).filter(s => s.sellerId !== undefined && s.sellerId !== null && s.sellerId.toString() === uidStr);
-            resPayments = (resPayments || []).filter(p => p.userId !== undefined && p.userId !== null && p.userId.toString() === uidStr);
-            expenses = (expenses || []).filter(e => e.userId !== undefined && e.userId !== null && e.userId.toString() === uidStr);
-        } else {
-            sales = []; resPayments = []; expenses = [];
-        }
-
-        // 🔄 FILTRADO POR TURNO (shiftId) — Multi-turno por día
-        // Incluye registros con el shiftId exacto O registros legacy sin shiftId
-        // (ventas creadas antes de la funcionalidad multi-turno v20)
-        if (shiftId !== null && shiftId !== undefined) {
-            // Verificar si hay registros CON este shiftId específico
-            const hasExactShift = sales.some(s => s.shiftId === shiftId);
-            if (hasExactShift) {
-                // Modo estricto: solo registros de este turno
-                sales = sales.filter(s => s.shiftId === shiftId);
-                resPayments = resPayments.filter(p => p.shiftId === shiftId);
-                expenses = expenses.filter(e => e.shiftId === shiftId);
-            } else {
-                // Fallback: incluir registros sin shiftId (legacy) del mismo usuario/fecha
-                sales = sales.filter(s => !s.shiftId || s.shiftId === shiftId);
-                resPayments = resPayments.filter(p => !p.shiftId || p.shiftId === shiftId);
-                expenses = expenses.filter(e => !e.shiftId || e.shiftId === shiftId);
-            }
-        }
+        // Filtrado por usuario/turno extraído a lógica pura (utils/closureMovements):
+        // misma semántica de siempre + modo allUsers para regularización de día
+        // completo en cierres RETROACTIVOS (los movimientos pendientes pueden ser
+        // de un vendedor que ya no existe)
+        const { sales, resPayments, expenses } = filterClosureMovements({
+            sales: rawSales,
+            resPayments: rawResPayments,
+            expenses: rawExpenses,
+            userId,
+            shiftId,
+            allUsers: !!options.allUsers,
+        });
 
         // ── CORRECCIÓN: Filtrar ventas anuladas ──
         const filteredSales = (sales || []).filter(s => s.status !== 'annulled');
@@ -571,7 +555,10 @@ export async function syncClosureIfDateExists(dateRaw, userId = null, shiftId = 
     // Validar que el cierre pertenece al usuario que solicita la sincronización
     if (userId !== null && userId !== undefined && existing.userId && existing.userId.toString() !== userId.toString()) return;
 
-    const newData = await calculateClosureData(date, userId, shiftId || existing.openingId);
+    // Cierres retroactivos se recalculan a nivel día completo (allUsers): sus
+    // movimientos pueden ser de otro usuario y un recálculo por usuario los
+    // dejaría en cero
+    const newData = await calculateClosureData(date, userId, shiftId || existing.openingId, { allUsers: !!existing.retroactive });
     
     await db.cashClosures.update(existing.id, {
         totalSales: newData.totalSales,

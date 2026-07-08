@@ -66,9 +66,12 @@ export default function CashClose() {
     const currentShiftId = selectedShiftId || (dayLevelRetro ? null : activeShiftId);
 
     // ── Datos del turno ──────────────────────────────────────────────────
+    // En modo día retroactivo (dayLevelRetro) el cálculo incluye movimientos de
+    // TODOS los usuarios: el día pendiente puede deberse a ventas de un vendedor
+    // que ya no existe (mismo criterio que el detector de pendientes)
     const salesData = useLiveQuery(
-        () => calculateClosureData(date, user?.id, currentShiftId),
-        [date, user?.id, currentShiftId]
+        () => calculateClosureData(date, user?.id, currentShiftId, { allUsers: dayLevelRetro }),
+        [date, user?.id, currentShiftId, dayLevelRetro]
     );
     const existing = useLiveQuery(
         () => currentShiftId
@@ -486,9 +489,11 @@ export default function CashClose() {
                         <Lock size={12} />
                         Fecha del Cierre
                     </label>
+                    {/* Texto formateado con locale 'es' explícito: el <input type="date">
+                        nativo mostraba MM/DD/YYYY en navegadores con locale en-US */}
                     <input
-                        type="date"
-                        value={date}
+                        type="text"
+                        value={new Date(date + 'T12:00:00').toLocaleDateString('es', { day: '2-digit', month: '2-digit', year: 'numeric' })}
                         disabled={true}
                         className="w-full bg-gray-50 text-pink-900 font-bold focus:outline-none cursor-not-allowed opacity-75"
                     />
