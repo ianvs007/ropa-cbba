@@ -11,6 +11,7 @@ import {
 import { useNotification } from '../hooks/useNotification';
 import { useAvailableStock } from '../hooks/useAvailableStock';
 import { formatCurrency, drawPDFHeader } from '../utils';
+import { splitProportional } from '../utils/reservationSplit';
 import useCashRegister from '../hooks/useCashRegister';
 import { useUser } from '../contexts/UserContext';
 
@@ -73,20 +74,26 @@ export default function Reservations() {
     const [confirmCreate, setConfirmCreate] = React.useState(null); // datos validados pendientes de confirmar
 
     // ── Estado formulario nueva reserva ──
-    const EMPTY_FORM = { 
-    clientName: '', clientPhone: '', productId: '', notes: '', initialPayment: '', 
-    expiryMessage: '', paymentMethod: 'efectivo' 
+    const EMPTY_FORM = {
+    clientName: '', clientPhone: '', notes: '', initialPayment: '',
+    expiryMessage: '', paymentMethod: 'efectivo'
 };
+    const MAX_ITEMS = 5;   // máximo de prendas por reserva agrupada
     const [form, setForm] = React.useState(EMPTY_FORM);
     const [prodSearch, setProdSearch] = React.useState('');
     const [prodResults, setProdResults] = React.useState([]);
-    const [selProduct, setSelProduct] = React.useState(null);
-    const [searchedUnitCode, setSearchedUnitCode] = React.useState('');
+    // Prendas del grupo: { product, customPrice, priceError, searchedUnitCode }
+    const [items, setItems] = React.useState([]);
+    const [showProductSearch, setShowProductSearch] = React.useState(true);
+    const itemsRef = React.useRef([]);
+    itemsRef.current = items;
     const skipSearchRef = React.useRef(false);
     const [formBusy, setFormBusy] = React.useState(false);
-    const [customPrice, setCustomPrice] = React.useState('');   // precio con descuento
-    const [priceError, setPriceError] = React.useState('');
     const maxDiscount = parseFloat(settings?.find(s => s.key === 'maxDiscount')?.value || '10');
+
+    // Precio final de una prenda del grupo (con descuento si lo tiene)
+    const itemFinalPrice = (it) => it.customPrice !== '' ? parseFloat(it.customPrice) : it.product.price;
+    const groupTotal = Math.round(items.reduce((s, it) => s + (itemFinalPrice(it) || 0), 0) * 100) / 100;
 
     // ── Set de shortCodes ya reservados por reservas pendientes ──
     const reservedUnitCodes = React.useMemo(() => {
@@ -113,14 +120,20 @@ export default function Reservations() {
             const resMap = {};
             pendingRes.forEach(r => { resMap[r.productId] = (resMap[r.productId] || 0) + 1; });
 
-            // Buscar barcodes: solo disponibles (no vendidas, no reservadas)
+            // Exclusión adicional: unidades y cantidades ya elegidas en el propio grupo
+            const groupItems = itemsRef.current;
+            const groupCodes = new Set(groupItems.map(it => it.searchedUnitCode).filter(Boolean));
+            const groupCount = {};
+            groupItems.forEach(it => { groupCount[it.product.id] = (groupCount[it.product.id] || 0) + 1; });
+
+            // Buscar barcodes: solo disponibles (no vendidas, no reservadas, no en el grupo)
             let unitProductIds = new Set();
             let matchingBarcodes = [];
             if (isCode) {
                 // Match EXACTO para códigos numéricos
                 matchingBarcodes = await db.barcodes
                     .filter(b =>
-                        !b.used && !pendingResCodes.has(b.shortCode) &&
+                        !b.used && !pendingResCodes.has(b.shortCode) && !groupCodes.has(b.shortCode) &&
                         (b.shortCode === q || b.barcode === q)
                     ).toArray();
                 unitProductIds = new Set(matchingBarcodes.map(b => b.productId));
@@ -129,7 +142,7 @@ export default function Reservations() {
             const allProducts = await db.products.orderBy('name').toArray();
 
             const res = allProducts.filter(p => {
-                const available = (p.stock || 0) - (resMap[p.id] || 0);
+                const available = (p.stock || 0) - (resMap[p.id] || 0) - (groupCount[p.id] || 0);
                 if (p.active === false || available <= 0) return false;
                 if (isCode) {
                     return p.barcode === q || p.shortCode === q || unitProductIds.has(p.id);
@@ -145,14 +158,7 @@ export default function Reservations() {
                 if (freeExactUnit) {
                     const matchedProduct = res.find(p => p.id === freeExactUnit.productId);
                     if (matchedProduct) {
-                        setSearchedUnitCode(freeExactUnit.shortCode || '');
-                        setSelProduct(matchedProduct);
-                        setCustomPrice('');
-                        setPriceError('');
-                        setForm(prev => ({ ...prev, productId: matchedProduct.id }));
-                        skipSearchRef.current = true;
-                        setProdSearch(matchedProduct.name);
-                        setProdResults([]);
+                        addItem(matchedProduct, freeExactUnit.shortCode || '');
                         return;
                     }
                 }
@@ -163,12 +169,17 @@ export default function Reservations() {
         return () => clearTimeout(timer);
     }, [prodSearch]);
 
-    // ── Seleccionar producto ──
-    const selectProduct = async (p) => {
+    // ── Agregar prenda al grupo (hasta MAX_ITEMS) ──
+    const addItem = async (p, preResolvedCode) => {
+        if (itemsRef.current.length >= MAX_ITEMS) {
+            showMsg('error', `Máximo ${MAX_ITEMS} prendas por reserva`);
+            return;
+        }
+        const groupCodes = new Set(itemsRef.current.map(it => it.searchedUnitCode).filter(Boolean));
         const code = prodSearch.trim();
-        let resolvedCode = '';
+        let resolvedCode = preResolvedCode || '';
         // Resolver código unitario sin importar si es numérico o alfanumérico
-        if (code) {
+        if (!resolvedCode && code) {
             const productBarcodes = await db.barcodes
                 .where('productId').equals(p.id)
                 .toArray();
@@ -177,28 +188,46 @@ export default function Reservations() {
                 .and(r => r.status === 'pending')
                 .toArray();
             const reservedCodes = new Set(pendingRes.map(r => r.productShortCode).filter(Boolean));
+            const isFree = b => !b.used && !reservedCodes.has(b.shortCode) && !groupCodes.has(b.shortCode);
 
             // Match exacto primero
             const exactMatch = productBarcodes.find(b =>
-                !b.used && !reservedCodes.has(b.shortCode) &&
-                (b.shortCode === code || b.barcode === code)
+                isFree(b) && (b.shortCode === code || b.barcode === code)
             );
             // Match parcial solo si no hay exacto
             const matched = exactMatch || productBarcodes.find(b =>
-                !b.used && !reservedCodes.has(b.shortCode) &&
+                isFree(b) &&
                 ((b.shortCode && b.shortCode.includes(code)) ||
                  (b.barcode && b.barcode.includes(code)))
             );
             resolvedCode = matched?.shortCode || '';
         }
-        setSearchedUnitCode(resolvedCode);
-        setSelProduct(p);
-        setCustomPrice('');
-        setPriceError('');
-        setForm(prev => ({ ...prev, productId: p.id }));
-        skipSearchRef.current = true;
-        setProdSearch(p.name);
+        // Nunca repetir la misma unidad física dentro del grupo
+        if (resolvedCode && groupCodes.has(resolvedCode)) resolvedCode = '';
+
+        setItems(prev => [...prev, { product: p, customPrice: '', priceError: '', searchedUnitCode: resolvedCode }]);
+        setShowProductSearch(false);
+        setProdSearch('');
         setProdResults([]);
+    };
+
+    // ── Quitar prenda del grupo ──
+    const removeItem = (idx) => setItems(prev => prev.filter((_, i) => i !== idx));
+
+    // ── Editar precio de una prenda del grupo (misma validación que antes) ──
+    const updateItemPrice = (idx, val) => {
+        setItems(prev => prev.map((it, i) => {
+            if (i !== idx) return it;
+            let err = '';
+            if (val !== '') {
+                const num = parseFloat(val);
+                if (isNaN(num) || num <= 0) err = 'El precio debe ser mayor a 0';
+                else if (it.product.cost && num <= it.product.cost) err = `No puede ser menor o igual al costo (${formatCurrency(it.product.cost, currency)})`;
+                else if (it.product.price - num < 0) err = 'El precio no puede ser mayor al original';
+                else if (maxDiscount > 0 && (it.product.price - num) > maxDiscount) err = `Rebaja máxima: ${formatCurrency(maxDiscount, currency)}`;
+            }
+            return { ...it, customPrice: val, priceError: err };
+        }));
     };
 
     // ── Calcular datos de una reserva ──
@@ -241,119 +270,162 @@ export default function Reservations() {
     /** Validar formulario y mostrar modal de confirmación antes de guardar */
     const handleCreate = async (e) => {
         e.preventDefault();
-        if (!selProduct) { showMsg('error', 'Selecciona una prenda'); return; }
-        if (priceError) { showMsg('error', priceError); return; }
+        if (items.length === 0) { showMsg('error', 'Agrega al menos una prenda'); return; }
+        const badPrice = items.find(it => it.priceError);
+        if (badPrice) { showMsg('error', badPrice.priceError); return; }
         const cname = form.clientName.trim();
         if (!cname) { showMsg('error', 'El nombre del cliente es obligatorio'); return; }
         if (cname.length < 2) { showMsg('error', 'El nombre del cliente debe tener al menos 2 caracteres'); return; }
         const initPay = parseFloat(form.initialPayment);
         if (isNaN(initPay) || initPay < 0.01) { showMsg('error', 'El abono inicial debe ser mayor a 0'); return; }
-        const finalPrice = customPrice !== '' ? parseFloat(customPrice) : selProduct.price;
-        if (initPay > finalPrice) { showMsg('error', 'El abono no puede superar el precio total'); return; }
+        if (initPay > groupTotal) { showMsg('error', `El abono no puede superar el total del grupo (${formatCurrency(groupTotal, currency)})`); return; }
 
-        const reserved = reservedMap[selProduct.id] || 0;
-        const available = selProduct.stock - reserved;
-        if (available < 1) { showMsg('error', 'Producto sin stock disponible (ya reservado por otros clientes)'); return; }
+        // Stock disponible por producto: descontar reservas pendientes de otros
+        // clientes Y las unidades ya elegidas dentro del propio grupo
+        const perProduct = {};
+        items.forEach(it => { perProduct[it.product.id] = (perProduct[it.product.id] || 0) + 1; });
+        for (const it of items) {
+            const reserved = reservedMap[it.product.id] || 0;
+            const available = (it.product.stock || 0) - reserved;
+            if (available < perProduct[it.product.id]) {
+                showMsg('error', `Stock insuficiente de "${it.product.name}": hay ${Math.max(0, available)} unidad(es) libre(s) y el grupo pide ${perProduct[it.product.id]}`);
+                return;
+            }
+        }
 
-        // Validar que la unidad buscada no esté ya reservada
-        if (searchedUnitCode && reservedUnitCodes.has(searchedUnitCode)) {
-            showMsg('error', `La unidad con código ${searchedUnitCode} ya está reservada. Busca otra unidad disponible.`);
-            return;
+        // Validar que las unidades buscadas no estén reservadas ni repetidas en el grupo
+        const seenCodes = new Set();
+        for (const it of items) {
+            if (!it.searchedUnitCode) continue;
+            if (reservedUnitCodes.has(it.searchedUnitCode)) {
+                showMsg('error', `La unidad con código ${it.searchedUnitCode} ya está reservada. Busca otra unidad disponible.`);
+                return;
+            }
+            if (seenCodes.has(it.searchedUnitCode)) {
+                showMsg('error', `La unidad ${it.searchedUnitCode} está repetida en el grupo. Quita una de las dos.`);
+                return;
+            }
+            seenCodes.add(it.searchedUnitCode);
         }
 
         // Todo válido → mostrar confirmación en lugar de guardar directamente
-        setConfirmCreate({ cname, initPay, product: selProduct, finalPrice, form: { ...form }, searchedCode: searchedUnitCode });
+        setConfirmCreate({
+            cname, initPay, total: groupTotal,
+            items: items.map(it => ({ product: it.product, finalPrice: itemFinalPrice(it), searchedCode: it.searchedUnitCode })),
+            form: { ...form },
+        });
     };
 
     /** Ejecutar guardado después de confirmación del modal */
     const executeCreate = async () => {
         if (!confirmCreate) return;
-        const { cname, initPay, product, finalPrice, form: savedForm, searchedCode } = confirmCreate;
+        const { cname, initPay, items: groupItems, form: savedForm } = confirmCreate;
         setConfirmCreate(null);
         setFormBusy(true);
         try {
+            // Reparto proporcional del abono (cuadra al centavo en la última prenda)
+            const shares = splitProportional(initPay, groupItems.map(it => it.finalPrice));
+            // groupId solo para reservas de más de una prenda (retrocompatibilidad)
+            const groupId = groupItems.length > 1
+                ? (typeof crypto !== 'undefined' && crypto.randomUUID
+                    ? crypto.randomUUID()
+                    : `grp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`)
+                : null;
+            const paymentNote = groupItems.length > 1 ? 'Abono inicial (proporcional)' : 'Abono inicial';
+
             await db.transaction('rw', db.reservations, db.reservationPayments, db.barcodes, async () => {
-                // Obtener shortCodes ya reservados por otras reservas pendientes del mismo producto
-                const pendingReservations = await db.reservations
-                    .where('productId').equals(product.id)
-                    .and(r => r.status === 'pending')
-                    .toArray();
-                const reservedShortCodes = new Set(
-                    pendingReservations.map(r => r.productShortCode).filter(Boolean)
-                );
+                // Unidades ya asignadas DENTRO del propio grupo (no repetir la misma prenda física)
+                const assignedCodes = new Set();
 
-                // Leer TODOS los barcodes del producto y filtrar en JS puro
-                const allProductBarcodes = await db.barcodes
-                    .where('productId').equals(product.id)
-                    .toArray();
+                for (let i = 0; i < groupItems.length; i++) {
+                    const { product, finalPrice, searchedCode } = groupItems[i];
 
-                const availableUnits = allProductBarcodes.filter(b =>
-                    !b.used && !reservedShortCodes.has(b.shortCode)
-                );
-
-                // Buscar la unidad específica que el vendedor buscó
-                let assignedUnit = null;
-
-                if (searchedCode && availableUnits.length > 0) {
-                    // Match exacto primero
-                    assignedUnit = availableUnits.find(b =>
-                        b.shortCode === searchedCode || b.barcode === searchedCode
+                    // Obtener shortCodes ya reservados por otras reservas pendientes del mismo producto
+                    const pendingReservations = await db.reservations
+                        .where('productId').equals(product.id)
+                        .and(r => r.status === 'pending')
+                        .toArray();
+                    const reservedShortCodes = new Set(
+                        pendingReservations.map(r => r.productShortCode).filter(Boolean)
                     );
-                    // Match parcial si no hay exacto
-                    if (!assignedUnit) {
+
+                    // Leer TODOS los barcodes del producto y filtrar en JS puro
+                    const allProductBarcodes = await db.barcodes
+                        .where('productId').equals(product.id)
+                        .toArray();
+
+                    const availableUnits = allProductBarcodes.filter(b =>
+                        !b.used && !reservedShortCodes.has(b.shortCode) && !assignedCodes.has(b.shortCode)
+                    );
+
+                    // Buscar la unidad específica que el vendedor buscó
+                    let assignedUnit = null;
+
+                    if (searchedCode && availableUnits.length > 0) {
+                        // Match exacto primero
                         assignedUnit = availableUnits.find(b =>
-                            (b.shortCode && b.shortCode.includes(searchedCode)) ||
-                            (b.barcode && b.barcode.includes(searchedCode))
+                            b.shortCode === searchedCode || b.barcode === searchedCode
                         );
+                        // Match parcial si no hay exacto
+                        if (!assignedUnit) {
+                            assignedUnit = availableUnits.find(b =>
+                                (b.shortCode && b.shortCode.includes(searchedCode)) ||
+                                (b.barcode && b.barcode.includes(searchedCode))
+                            );
+                        }
                     }
+
+                    // Si no se encontró la preferida, asignar la primera libre
+                    if (!assignedUnit && availableUnits.length > 0) {
+                        assignedUnit = availableUnits[0];
+                    }
+
+                    const unitShortCode = assignedUnit?.shortCode || product.shortCode || '';
+                    const unitBarcode = assignedUnit?.barcode || '';
+                    if (assignedUnit?.shortCode) assignedCodes.add(assignedUnit.shortCode);
+
+                    const reservaId = await db.reservations.add({
+                        clientName: cname.toUpperCase(),
+                        clientPhone: savedForm.clientPhone.trim(),
+                        productId: product.id,
+                        productName: product.name,
+                        productSize: product.size || '',
+                        productColor: product.color || '',
+                        productShortCode: unitShortCode,
+                        productBarcode: unitBarcode,
+                        totalPrice: finalPrice,
+                        originalPrice: product.price,
+                        status: 'pending',
+                        notes: savedForm.notes.trim().toUpperCase(),
+                        expiryMessage: savedForm.expiryMessage || defExpiryMsg,
+                        expiryDate: new Date(Date.now() + resDays * 24 * 60 * 60 * 1000).toISOString(),
+                        sellerId: user?.id,
+                        sellerName: user?.name || user?.username,
+                        createdAt: getLocalISOString(),
+                        ...(groupId ? { groupId } : {}),
+                    });
+                    await db.reservationPayments.add({
+                        reservationId: reservaId,
+                        date: getLocalISOString(),
+                        amount: shares[i],
+                        paymentMethod: savedForm.paymentMethod || 'efectivo',
+                        notes: paymentNote,
+                        registeredBy: user?.name || user?.username,
+                        userId: user?.id,
+                        shiftId: activeShiftId || undefined,
+                    });
                 }
-
-                // Si no se encontró la preferida, asignar la primera libre
-                if (!assignedUnit && availableUnits.length > 0) {
-                    assignedUnit = availableUnits[0];
-                }
-
-                const unitShortCode = assignedUnit?.shortCode || product.shortCode || '';
-                const unitBarcode = assignedUnit?.barcode || '';
-
-                const reservaId = await db.reservations.add({
-                    clientName: cname.toUpperCase(),
-                    clientPhone: savedForm.clientPhone.trim(),
-                    productId: product.id,
-                    productName: product.name,
-                    productSize: product.size || '',
-                    productColor: product.color || '',
-                    productShortCode: unitShortCode,
-                    productBarcode: unitBarcode,
-                    totalPrice: finalPrice,
-                    originalPrice: product.price,
-                    status: 'pending',
-                    notes: savedForm.notes.trim().toUpperCase(),
-                    expiryMessage: savedForm.expiryMessage || defExpiryMsg,
-                    expiryDate: new Date(Date.now() + resDays * 24 * 60 * 60 * 1000).toISOString(),
-                    sellerId: user?.id,
-                    sellerName: user?.name || user?.username,
-                    createdAt: getLocalISOString(),
-                });
-                await db.reservationPayments.add({
-                    reservationId: reservaId,
-                    date: getLocalISOString(),
-                    amount: initPay,
-                    paymentMethod: savedForm.paymentMethod || 'efectivo',
-                    notes: 'Abono inicial',
-                    registeredBy: user?.name || user?.username,
-                    userId: user?.id,
-                    shiftId: activeShiftId || undefined,
-                });
             });
 
             await syncClosureIfDateExists(getLocalISOString().slice(0, 10), user?.id, activeShiftId);
 
-            showMsg('success', '✅ Reserva creada correctamente (prenda apartada)');
+            showMsg('success', groupItems.length > 1
+                ? `✅ Reserva creada: ${groupItems.length} prendas apartadas en un solo grupo`
+                : '✅ Reserva creada correctamente (prenda apartada)');
             setShowNew(false);
             setForm(EMPTY_FORM);
-            setSelProduct(null);
-            setSearchedUnitCode('');
+            setItems([]);
+            setShowProductSearch(true);
             setProdSearch('');
         } catch (err) {
             showMsg('error', err.message || 'Error al crear la reserva');
@@ -814,11 +886,12 @@ No se pueden alterar registros de días cerrados.`);
                     <Tag size={24} strokeWidth={1.8} className="text-pink-600" />
                     Reservas (Sistema de Reserva)
                 </h1>
-                <button id="reserva-new" onClick={() => { 
-                        setShowNew(true); 
-                        setForm({ ...EMPTY_FORM, expiryMessage: defExpiryMsg }); 
-                        setProdSearch(''); 
-                        setSelProduct(null);
+                <button id="reserva-new" onClick={() => {
+                        setShowNew(true);
+                        setForm({ ...EMPTY_FORM, expiryMessage: defExpiryMsg });
+                        setProdSearch('');
+                        setItems([]);
+                        setShowProductSearch(true);
                     }}
                     className="btn-primary flex items-center gap-2">
                     <Plus size={18} /> Nueva Reserva
@@ -1148,35 +1221,48 @@ No se pueden alterar registros de días cerrados.`);
                                         <span className="font-bold text-pink-700">{confirmCreate.form.clientPhone}</span>
                                     </div>
                                 )}
-                                <div className="flex justify-between text-sm">
-                                    <span className="font-black text-pink-400 uppercase text-[10px] tracking-widest">Prenda</span>
-                                    <span className="font-black text-pink-900">{confirmCreate.product.name}</span>
+
+                                {/* ── Prendas del grupo ── */}
+                                <div className="border-t border-pink-100 pt-2 mt-2 space-y-1.5 max-h-48 overflow-y-auto">
+                                    {confirmCreate.items.map((it, idx) => (
+                                        <div key={idx} className="flex justify-between text-sm gap-2">
+                                            <span className="font-black text-pink-900 text-xs truncate">
+                                                {confirmCreate.items.length > 1 && <span className="text-pink-300 mr-1">{idx + 1}.</span>}
+                                                {it.product.name}
+                                                {it.searchedCode && <span className="text-green-600 ml-1 text-[10px]">({it.searchedCode})</span>}
+                                            </span>
+                                            <span className="font-black text-pink-900 shrink-0">
+                                                {it.finalPrice < it.product.price && (
+                                                    <span className="line-through text-pink-300 mr-2 text-xs">{formatCurrency(it.product.price, currency)}</span>
+                                                )}
+                                                {formatCurrency(it.finalPrice, currency)}
+                                            </span>
+                                        </div>
+                                    ))}
                                 </div>
-                                <div className="flex justify-between text-sm">
-                                    <span className="font-black text-pink-400 uppercase text-[10px] tracking-widest">Precio total</span>
-                                    <span className="font-black text-pink-900">
-                                        {confirmCreate.finalPrice < confirmCreate.product.price && (
-                                            <span className="line-through text-pink-300 mr-2 text-xs">{formatCurrency(confirmCreate.product.price, currency)}</span>
-                                        )}
-                                        {formatCurrency(confirmCreate.finalPrice, currency)}
-                                    </span>
-                                </div>
-                                {confirmCreate.finalPrice < confirmCreate.product.price && (
-                                    <div className="flex justify-between text-sm">
-                                        <span className="font-black text-purple-500 uppercase text-[10px] tracking-widest">Descuento</span>
-                                        <span className="font-black text-purple-600">-{formatCurrency(confirmCreate.product.price - confirmCreate.finalPrice, currency)}</span>
-                                    </div>
-                                )}
+
                                 <div className="flex justify-between text-sm border-t border-pink-100 pt-2 mt-2">
-                                    <span className="font-black text-green-600 uppercase text-[10px] tracking-widest">Abono inicial</span>
+                                    <span className="font-black text-pink-400 uppercase text-[10px] tracking-widest">
+                                        Total {confirmCreate.items.length > 1 ? `(${confirmCreate.items.length} prendas)` : ''}
+                                    </span>
+                                    <span className="font-black text-pink-900 text-base">{formatCurrency(confirmCreate.total, currency)}</span>
+                                </div>
+                                <div className="flex justify-between text-sm">
+                                    <span className="font-black text-green-600 uppercase text-[10px] tracking-widest">
+                                        Abono inicial {confirmCreate.items.length > 1 ? '(se reparte proporcionalmente)' : ''}
+                                    </span>
                                     <span className="font-black text-green-700 text-base">{formatCurrency(confirmCreate.initPay, currency)}</span>
                                 </div>
                                 <div className="flex justify-between text-sm">
                                     <span className="font-black text-orange-500 uppercase text-[10px] tracking-widest">Saldo restante</span>
-                                    <span className="font-black text-orange-600">{formatCurrency(confirmCreate.finalPrice - confirmCreate.initPay, currency)}</span>
+                                    <span className="font-black text-orange-600">{formatCurrency(confirmCreate.total - confirmCreate.initPay, currency)}</span>
                                 </div>
                             </div>
-                            <p className="text-center text-xs text-pink-400 italic">La prenda quedará apartada para este cliente</p>
+                            <p className="text-center text-xs text-pink-400 italic">
+                                {confirmCreate.items.length > 1
+                                    ? `Las ${confirmCreate.items.length} prendas quedarán apartadas para este cliente`
+                                    : 'La prenda quedará apartada para este cliente'}
+                            </p>
                         </div>
 
                         <div className="flex gap-3">
@@ -1227,76 +1313,93 @@ No se pueden alterar registros de días cerrados.`);
                                 </div>
 
                                 <div className="fashion-card p-8">
-                                    <h3 className="text-xs font-black text-pink-300 uppercase tracking-widest mb-4 flex items-center gap-2"><Package size={14} /> Prenda</h3>
-                                    <div className="relative mb-4">
-                                        <input value={prodSearch} onChange={e => { setProdSearch(e.target.value); setSelProduct(null); }} className="fashion-input" placeholder="BUSCAR POR NOMBRE O CÓDIGO..." />
-                                        {prodResults.length > 0 && (
-                                            <div className="absolute z-10 w-full mt-2 bg-white border-2 border-pink-100 rounded-3xl shadow-2xl overflow-hidden">
-                                                {prodResults.map(p => (
-                                                    <button key={p.id} type="button" onClick={() => selectProduct(p)} className="w-full p-4 hover:bg-pink-50 text-left border-b last:border-0 border-pink-50">
-                                                        <p className="font-black text-pink-950 uppercase text-xs">{p.name}</p>
-                                                        <p className="text-[10px] text-pink-400 font-bold uppercase">T: {p.size || '-'} · {p.color || '-'} · {formatCurrency(p.price, currency)}</p>
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        )}
-                                    </div>
-                                    {selProduct && (
-                                        <div className="bg-pink-900 text-white p-5 rounded-[2rem] shadow-lg shadow-pink-100/50">
-                                            <div className="flex justify-between items-center">
-                                                <div>
-                                                    <p className="text-[10px] font-black text-pink-400 uppercase">Seleccionado</p>
-                                                    <p className="font-bold uppercase text-sm truncate max-w-[200px]">{selProduct.name}</p>
-                                                    {searchedUnitCode && (
-                                                        <p className="text-[10px] font-bold text-green-300 mt-0.5">Cód. Unidad: {searchedUnitCode}</p>
-                                                    )}
-                                                </div>
-                                                <div className="text-right">
-                                                    {customPrice !== '' && parseFloat(customPrice) < selProduct.price && (
-                                                        <p className="text-[10px] line-through text-pink-400">{formatCurrency(selProduct.price, currency)}</p>
-                                                    )}
-                                                    <p className="text-xl font-black">{formatCurrency(customPrice !== '' ? parseFloat(customPrice) : selProduct.price, currency)}</p>
-                                                </div>
-                                            </div>
-                                            {/* Editor de precio con descuento */}
-                                            <div className="mt-3 pt-3 border-t border-pink-700/50">
-                                                <div className="flex items-center gap-2">
-                                                    <Edit2 size={12} className="text-pink-400" />
-                                                    <label className="text-[10px] font-black text-pink-400 uppercase">Precio con descuento</label>
-                                                </div>
-                                                <div className="flex items-center gap-2 mt-1">
-                                                    <input
-                                                        type="number"
-                                                        step="0.01"
-                                                        placeholder={selProduct.price.toFixed(2)}
-                                                        value={customPrice}
-                                                        onChange={e => {
-                                                            const val = e.target.value;
-                                                            setCustomPrice(val);
-                                                            if (val === '') { setPriceError(''); return; }
-                                                            const num = parseFloat(val);
-                                                            if (isNaN(num) || num <= 0) { setPriceError('El precio debe ser mayor a 0'); return; }
-                                                            if (selProduct.cost && num <= selProduct.cost) { setPriceError(`No puede ser menor o igual al costo (${formatCurrency(selProduct.cost, currency)})`); return; }
-                                                            const disc = selProduct.price - num;
-                                                            if (disc < 0) { setPriceError('El precio no puede ser mayor al original'); return; }
-                                                            if (maxDiscount > 0 && disc > maxDiscount) { setPriceError(`Rebaja máxima: ${formatCurrency(maxDiscount, currency)}`); return; }
-                                                            setPriceError('');
-                                                        }}
-                                                        className="flex-1 bg-pink-800/60 text-white font-black rounded-xl px-3 py-2 text-sm border border-pink-700 focus:border-pink-400 outline-none"
-                                                    />
-                                                    {customPrice !== '' && (
-                                                        <button type="button" onClick={() => { setCustomPrice(''); setPriceError(''); }}
-                                                            className="p-2 bg-pink-800/60 rounded-xl hover:bg-pink-700 transition-colors">
-                                                            <X size={14} />
+                                    <h3 className="text-xs font-black text-pink-300 uppercase tracking-widest mb-4 flex items-center gap-2">
+                                        <Package size={14} /> Prendas ({items.length}/{MAX_ITEMS})
+                                    </h3>
+                                    {(showProductSearch || items.length === 0) && items.length < MAX_ITEMS && (
+                                        <div className="relative mb-4">
+                                            <input value={prodSearch} onChange={e => setProdSearch(e.target.value)} className="fashion-input" placeholder="BUSCAR POR NOMBRE O CÓDIGO..." />
+                                            {prodResults.length > 0 && (
+                                                <div className="absolute z-10 w-full mt-2 bg-white border-2 border-pink-100 rounded-3xl shadow-2xl overflow-hidden">
+                                                    {prodResults.map(p => (
+                                                        <button key={p.id} type="button" onClick={() => addItem(p)} className="w-full p-4 hover:bg-pink-50 text-left border-b last:border-0 border-pink-50">
+                                                            <p className="font-black text-pink-950 uppercase text-xs">{p.name}</p>
+                                                            <p className="text-[10px] text-pink-400 font-bold uppercase">T: {p.size || '-'} · {p.color || '-'} · {formatCurrency(p.price, currency)}</p>
                                                         </button>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {/* ── Lista de prendas del grupo ── */}
+                                    <div className="space-y-3">
+                                        {items.map((it, idx) => (
+                                            <div key={idx} className="bg-pink-900 text-white p-5 rounded-[2rem] shadow-lg shadow-pink-100/50">
+                                                <div className="flex justify-between items-center">
+                                                    <div className="min-w-0">
+                                                        <p className="text-[10px] font-black text-pink-400 uppercase">Prenda {idx + 1}</p>
+                                                        <p className="font-bold uppercase text-sm truncate max-w-[200px]">{it.product.name}</p>
+                                                        {it.searchedUnitCode && (
+                                                            <p className="text-[10px] font-bold text-green-300 mt-0.5">Cód. Unidad: {it.searchedUnitCode}</p>
+                                                        )}
+                                                    </div>
+                                                    <div className="flex items-center gap-3 shrink-0">
+                                                        <div className="text-right">
+                                                            {it.customPrice !== '' && parseFloat(it.customPrice) < it.product.price && (
+                                                                <p className="text-[10px] line-through text-pink-400">{formatCurrency(it.product.price, currency)}</p>
+                                                            )}
+                                                            <p className="text-xl font-black">{formatCurrency(itemFinalPrice(it) || 0, currency)}</p>
+                                                        </div>
+                                                        <button type="button" onClick={() => removeItem(idx)}
+                                                            title="Quitar prenda"
+                                                            className="p-2 bg-pink-800/60 rounded-xl hover:bg-red-600 transition-colors">
+                                                            <X size={16} />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                                {/* Editor de precio con descuento */}
+                                                <div className="mt-3 pt-3 border-t border-pink-700/50">
+                                                    <div className="flex items-center gap-2">
+                                                        <Edit2 size={12} className="text-pink-400" />
+                                                        <label className="text-[10px] font-black text-pink-400 uppercase">Precio con descuento</label>
+                                                    </div>
+                                                    <div className="flex items-center gap-2 mt-1">
+                                                        <input
+                                                            type="number"
+                                                            step="0.01"
+                                                            placeholder={it.product.price.toFixed(2)}
+                                                            value={it.customPrice}
+                                                            onChange={e => updateItemPrice(idx, e.target.value)}
+                                                            className="flex-1 bg-pink-800/60 text-white font-black rounded-xl px-3 py-2 text-sm border border-pink-700 focus:border-pink-400 outline-none"
+                                                        />
+                                                        {it.customPrice !== '' && (
+                                                            <button type="button" onClick={() => updateItemPrice(idx, '')}
+                                                                className="p-2 bg-pink-800/60 rounded-xl hover:bg-pink-700 transition-colors">
+                                                                <X size={14} />
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                    {it.priceError && <p className="text-[10px] text-red-300 font-bold mt-1">{it.priceError}</p>}
+                                                    {!it.priceError && it.customPrice !== '' && parseFloat(it.customPrice) < it.product.price && (
+                                                        <p className="text-[10px] text-green-300 font-bold mt-1">Descuento: -{formatCurrency(it.product.price - parseFloat(it.customPrice), currency)}</p>
                                                     )}
                                                 </div>
-                                                {priceError && <p className="text-[10px] text-red-300 font-bold mt-1">{priceError}</p>}
-                                                {!priceError && customPrice !== '' && parseFloat(customPrice) < selProduct.price && (
-                                                    <p className="text-[10px] text-green-300 font-bold mt-1">Descuento: -{formatCurrency(selProduct.price - parseFloat(customPrice), currency)}</p>
-                                                )}
                                             </div>
-                                        </div>
+                                        ))}
+                                    </div>
+
+                                    {/* ── Agregar otra prenda / aviso de máximo ── */}
+                                    {items.length > 0 && items.length < MAX_ITEMS && !showProductSearch && (
+                                        <button type="button" onClick={() => setShowProductSearch(true)}
+                                            className="w-full mt-4 py-4 border-2 border-dashed border-pink-300 text-pink-500 font-black rounded-2xl text-xs uppercase tracking-widest hover:bg-pink-50 transition-colors flex items-center justify-center gap-2">
+                                            <Plus size={16} /> Agregar otra prenda
+                                        </button>
+                                    )}
+                                    {items.length >= MAX_ITEMS && (
+                                        <p className="mt-4 text-center text-[11px] font-black text-orange-500 uppercase tracking-widest bg-orange-50 border border-orange-200 rounded-2xl py-3">
+                                            Máximo {MAX_ITEMS} prendas por reserva
+                                        </p>
                                     )}
                                 </div>
                             </div>
@@ -1305,9 +1408,20 @@ No se pueden alterar registros de días cerrados.`);
                                 <div className="fashion-card p-8 bg-gradient-to-br from-white to-pink-50/30">
                                     <h3 className="text-xs font-black text-pink-300 uppercase tracking-widest mb-4 flex items-center gap-2"><DollarSign size={14} /> Pago Bancario / Inicial</h3>
                                     <div className="space-y-4">
+                                        {items.length > 0 && (
+                                            <div className="bg-pink-900 text-white rounded-2xl p-4 flex justify-between items-center">
+                                                <span className="text-[10px] font-black text-pink-400 uppercase tracking-widest">
+                                                    Total del grupo ({items.length} {items.length === 1 ? 'prenda' : 'prendas'})
+                                                </span>
+                                                <span className="text-2xl font-black">{formatCurrency(groupTotal, currency)}</span>
+                                            </div>
+                                        )}
                                         <div>
-                                            <label className="text-[10px] font-black text-pink-800 uppercase mb-1 block">Abono Inicial *</label>
+                                            <label className="text-[10px] font-black text-pink-800 uppercase mb-1 block">Abono Inicial (único para todo el grupo) *</label>
                                             <input type="number" step="0.01" value={form.initialPayment} onChange={e => setForm(p => ({ ...p, initialPayment: e.target.value }))} className="fashion-input text-2xl font-black py-4" required />
+                                            {items.length > 1 && (
+                                                <p className="text-[10px] text-pink-400 font-bold mt-1 italic">Se repartirá proporcionalmente entre las {items.length} prendas</p>
+                                            )}
                                         </div>
                                         <div className="grid grid-cols-2 gap-3">
                                             {['efectivo', 'qr'].map(m => (
@@ -1332,7 +1446,7 @@ No se pueden alterar registros de días cerrados.`);
                         {/* Botones de acción integrados en el formulario */}
                         <div className="flex gap-4 pt-4 border-t border-pink-100">
                             <button type="button" onClick={() => setShowNew(false)} className="px-8 py-5 border-2 border-pink-100 text-pink-400 font-black rounded-3xl text-xs uppercase tracking-widest hover:border-pink-300 transition-colors">Cancelar</button>
-                            <button type="submit" disabled={formBusy || !selProduct}
+                            <button type="submit" disabled={formBusy || items.length === 0}
                                 className="flex-1 bg-gradient-to-r from-pink-600 to-rose-600 text-white font-black py-5 rounded-3xl shadow-xl disabled:opacity-50 uppercase tracking-widest">
                                 {formBusy ? 'Guardando...' : 'Confirmar Reserva'}
                             </button>
