@@ -10,6 +10,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getLocalISOString } from '../db';
 import useCashRegister from '../hooks/useCashRegister';
 import CashOpenModal from './CashOpenModal';
+import PendingClosuresBanner from './PendingClosuresBanner';
 import { useUser } from '../contexts/UserContext';
 import { hasPermission, PERMISSIONS } from '../utils/permissions';
 
@@ -193,6 +194,9 @@ export default function Layout({ children }) {
                     </button>
                     <p className="font-bold text-pink-800 text-sm truncate">Tienda de Ropa</p>
                 </header>
+
+                {/* Aviso persistente de cierres de caja pendientes (todas las pantallas) */}
+                <PendingClosuresBanner />
 
                 {/* Contenido — padding adaptativo por resolución */}
                 <main className="flex-1 overflow-y-auto scrollbar-thin p-3 md:p-4 xl:p-5 2xl:p-6">
