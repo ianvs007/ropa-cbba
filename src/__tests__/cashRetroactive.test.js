@@ -72,6 +72,48 @@ describe('canCloseCashDate', () => {
         expect(result.allowed).toBe(false);
     });
 
+    it('REPRO BUG: un cierre retroactivo regulariza el día aunque los movimientos sean de otro usuario', () => {
+        // Escenario real: ventas de mayo con sellerId de una vendedora antigua (id 3);
+        // hoy la usuaria actual (id 5) cierra retroactivamente el 2026-05-09 desde
+        // CashClose. El registro guarda date='2026-05-09' (correcto, YYYY-MM-DD),
+        // closedAt=hoy y retroactive=true. El día debe dejar de estar pendiente.
+        const pendientes = findPendingClosureDates({
+            sales: [{ date: '2026-05-09T15:00:00.000Z', sellerId: 3, total: 200 }],
+            payments: [],
+            closures: [{
+                date: '2026-05-09',
+                userId: 5,
+                closedAt: '2026-07-08T18:00:00.000Z',
+                retroactive: true,
+            }],
+            openings: [],
+            today: TODAY,
+        });
+        expect(pendientes).toEqual([]);
+    });
+
+    it('REPRO BUG: el cierre retroactivo también cubre aperturas huérfanas de otro usuario ese día', () => {
+        const pendientes = findPendingClosureDates({
+            sales: [],
+            payments: [],
+            closures: [{ date: '2026-05-09', userId: 5, closedAt: '2026-07-08T18:00:00.000Z', retroactive: true }],
+            openings: [{ id: 88, date: '2026-05-09', userId: 3, openedAt: '2026-05-09T09:00:00.000Z' }],
+            today: TODAY,
+        });
+        expect(pendientes).toEqual([]);
+    });
+
+    it('regla por usuario intacta: un cierre NORMAL de un usuario no cubre ventas de otro', () => {
+        const pendientes = findPendingClosureDates({
+            sales: [{ date: '2026-07-06T15:00:00.000Z', sellerId: 3 }],
+            payments: [],
+            closures: [{ date: '2026-07-06', userId: 5, closedAt: '2026-07-06T20:00:00.000Z' }], // sin retroactive
+            openings: [],
+            today: TODAY,
+        });
+        expect(pendientes).toEqual(['2026-07-06']);
+    });
+
     it('sin fecha o sin today (hook aún cargando) → bloqueada sin fallar', () => {
         expect(canCloseCashDate({ selectedDate: null, today: TODAY, pendingDates: [] }).allowed).toBe(false);
         expect(canCloseCashDate({ selectedDate: TODAY, today: null, pendingDates: [] }).allowed).toBe(false);

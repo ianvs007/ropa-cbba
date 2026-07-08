@@ -26,13 +26,18 @@ export function findPendingClosureDates({ sales = [], payments = [], closures = 
 
     const dayOf = (r) => (r?.date || '').slice(0, 10);
 
-    // Cierres efectivos: por fecha+usuario y por openingId
+    // Cierres efectivos: por fecha+usuario, por openingId y por día completo
     const closedDayUser = new Set();
     const closedOpeningIds = new Set();
+    // Días regularizados con cierre RETROACTIVO: limpian el día para TODOS los
+    // usuarios (los movimientos antiguos pueden ser de un vendedor que ya no
+    // existe o no inicia sesión; nadie más podría limpiarlos)
+    const closedDates = new Set();
     closures.forEach(c => {
         if (!c.closedAt) return;
         const d = dayOf(c);
         if (d) closedDayUser.add(`${d}|${c.userId}`);
+        if (d && c.retroactive === true) closedDates.add(d);
         if (c.openingId != null) closedOpeningIds.add(c.openingId);
     });
 
@@ -42,19 +47,19 @@ export function findPendingClosureDates({ sales = [], payments = [], closures = 
     sales.forEach(s => {
         if (s.status === 'annulled') return;
         const d = dayOf(s);
-        if (d && d < today && !closedDayUser.has(`${d}|${s.sellerId}`)) pending.add(d);
+        if (d && d < today && !closedDates.has(d) && !closedDayUser.has(`${d}|${s.sellerId}`)) pending.add(d);
     });
     payments.forEach(p => {
         if (p.status === 'annulled') return;
         const d = dayOf(p);
-        if (d && d < today && !closedDayUser.has(`${d}|${p.userId}`)) pending.add(d);
+        if (d && d < today && !closedDates.has(d) && !closedDayUser.has(`${d}|${p.userId}`)) pending.add(d);
     });
 
     // Aperturas sin cierre correspondiente
     openings.forEach(o => {
         const d = dayOf(o);
         if (!d || d >= today) return;
-        if (!closedOpeningIds.has(o.id) && !closedDayUser.has(`${d}|${o.userId}`)) pending.add(d);
+        if (!closedOpeningIds.has(o.id) && !closedDates.has(d) && !closedDayUser.has(`${d}|${o.userId}`)) pending.add(d);
     });
 
     return [...pending].sort();
