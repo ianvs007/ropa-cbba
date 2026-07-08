@@ -58,6 +58,23 @@ export function evaluateDateChange({ frozenDate, lastKnownTs, nowTs, nowDate }) 
 }
 
 /**
+ * Lógica pura del episodio de manipulación: el intento se cuenta y el evento
+ * se registra UNA sola vez por episodio (primera detección), no en cada tick.
+ *
+ * @param {Object} params Igual que evaluateDateChange + alreadyManipulated
+ * @returns {Object} Resultado de evaluateDateChange + { countAttempt, logManipulation }
+ */
+export function processDateCheck({ frozenDate, lastKnownTs, nowTs, nowDate, alreadyManipulated }) {
+    const result = evaluateDateChange({ frozenDate, lastKnownTs, nowTs, nowDate });
+    const isFirstDetection = result.action === 'MANIPULATION' && !alreadyManipulated;
+    return {
+        ...result,
+        countAttempt: isFirstDetection,
+        logManipulation: isFirstDetection,
+    };
+}
+
+/**
  * Hook: Congelador de fecha + detector de manipulación
  * @returns {Object} { today, isManipulated, manipulationAttempts, verifyIntegrity, logEvent, canPerformAction }
  */
@@ -96,7 +113,13 @@ export function useSecureDate() {
         const lastKnownRaw = sessionStorage.getItem('lastKnownTimestamp');
         const lastKnownTs = lastKnownRaw ? Number(lastKnownRaw) : null;
 
-        const result = evaluateDateChange({ frozenDate, lastKnownTs, nowTs, nowDate });
+        const result = processDateCheck({
+            frozenDate,
+            lastKnownTs,
+            nowTs,
+            nowDate,
+            alreadyManipulated: isManipulated,
+        });
 
         switch (result.action) {
             case 'FREEZE':
@@ -106,12 +129,17 @@ export function useSecureDate() {
 
             case 'MANIPULATION':
                 setIsManipulated(true);
-                setManipulationAttempts(prev => prev + 1);
-                logSecurityEvent('DATE_MANIPULATION_DETECTED', {
-                    frozenDate,
-                    currentDate: nowDate,
-                    diffMinutes: result.diffMinutes,
-                });
+                // Un intento y un log por episodio, no por tick de 60 s
+                if (result.countAttempt) {
+                    setManipulationAttempts(prev => prev + 1);
+                }
+                if (result.logManipulation) {
+                    logSecurityEvent('DATE_MANIPULATION_DETECTED', {
+                        frozenDate,
+                        currentDate: nowDate,
+                        diffMinutes: result.diffMinutes,
+                    });
+                }
                 break;
 
             case 'ROLLOVER':
@@ -131,7 +159,7 @@ export function useSecureDate() {
             sessionStorage.setItem('lastKnownTimestamp', String(nowTs));
         }
         return result.action !== 'MANIPULATION';
-    }, [logSecurityEvent]);
+    }, [logSecurityEvent, isManipulated]);
 
     // ── Verificación al montar + cada minuto mientras la app sigue abierta ──
     useEffect(() => {

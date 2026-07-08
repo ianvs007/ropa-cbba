@@ -22,7 +22,7 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('../db', () => ({ db: {} }));
 vi.mock('../contexts/UserContext', () => ({ useUser: () => ({ user: null }) }));
 
-import { evaluateDateChange } from '../hooks/useSecureDate';
+import { evaluateDateChange, processDateCheck } from '../hooks/useSecureDate';
 
 const MINUTE = 60 * 1000;
 const DAY = 24 * 60 * MINUTE;
@@ -135,6 +135,50 @@ describe('evaluateDateChange', () => {
         });
         expect(second.action).toBe('MANIPULATION');
         expect(second.diffMinutes).toBe(29);
+    });
+
+    it('(f) episodio de manipulación: varios ticks consecutivos cuentan UN intento y UN log', () => {
+        // Simula el estado del hook a lo largo de ticks de 60 s con el reloj retrocedido
+        let isManipulated = false;
+        let attempts = 0;
+        const loggedEvents = [];
+
+        const tick = (nowTs) => {
+            const result = processDateCheck({
+                frozenDate: '2026-07-08',
+                lastKnownTs: T0, // no avanza en MANIPULATION (fix anterior)
+                nowTs,
+                nowDate: '2026-07-08',
+                alreadyManipulated: isManipulated,
+            });
+            if (result.action === 'MANIPULATION') {
+                isManipulated = true;
+                if (result.countAttempt) attempts += 1;
+                if (result.logManipulation) loggedEvents.push('DATE_MANIPULATION_DETECTED');
+            }
+        };
+
+        // Reloj retrocedido 30 min; tres ticks consecutivos (3 minutos de app abierta)
+        tick(T0 - 30 * MINUTE);
+        tick(T0 - 29 * MINUTE);
+        tick(T0 - 28 * MINUTE);
+
+        expect(isManipulated).toBe(true); // el bloqueo sigue activo
+        expect(attempts).toBe(1);         // un solo intento por episodio
+        expect(loggedEvents).toHaveLength(1); // sin spam de securityLogs
+    });
+
+    it('(f2) processDateCheck sin manipulación nunca pide contar ni loguear', () => {
+        const result = processDateCheck({
+            frozenDate: '2026-07-08',
+            lastKnownTs: T0,
+            nowTs: T0 + MINUTE,
+            nowDate: '2026-07-08',
+            alreadyManipulated: false,
+        });
+        expect(result.action).toBe('OK');
+        expect(result.countAttempt).toBe(false);
+        expect(result.logManipulation).toBe(false);
     });
 
     it('(d2) sin lastKnownTimestamp guardado (sesión vieja) no marca manipulación', () => {
