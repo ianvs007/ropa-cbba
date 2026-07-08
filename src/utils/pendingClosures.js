@@ -60,4 +60,39 @@ export function findPendingClosureDates({ sales = [], payments = [], closures = 
     return [...pending].sort();
 }
 
+/**
+ * 🔐 Autorización de cierre de caja por fecha.
+ *
+ * Regla:
+ *  - HOY (selectedDate === today)      → permitido, flujo normal (no retroactivo)
+ *  - Fecha FUTURA                      → SIEMPRE bloqueada
+ *  - Fecha pasada EN pendingDates      → permitida como cierre RETROACTIVO
+ *  - Fecha pasada fuera de pendientes  → bloqueada (ya cerrada o sin movimientos)
+ *
+ * @param {Object} params
+ * @param {string} params.selectedDate  Fecha a cerrar YYYY-MM-DD
+ * @param {string} params.today         Hoy según useSecureDate (frozenToday)
+ * @param {string[]} params.pendingDates Fechas pendientes (de findPendingClosureDates)
+ * @returns {{allowed: boolean, retroactive: boolean, reason: string|null}}
+ */
+export function canCloseCashDate({ selectedDate, today, pendingDates = [] }) {
+    if (!selectedDate || !today) {
+        return { allowed: false, retroactive: false, reason: 'Fecha no disponible todavía' };
+    }
+    if (selectedDate === today) {
+        return { allowed: true, retroactive: false, reason: null };
+    }
+    if (selectedDate > today) {
+        return { allowed: false, retroactive: false, reason: 'No se puede cerrar caja de una fecha futura' };
+    }
+    if (pendingDates.includes(selectedDate)) {
+        return { allowed: true, retroactive: true, reason: null };
+    }
+    return {
+        allowed: false,
+        retroactive: false,
+        reason: `El día ${selectedDate} no está pendiente de cierre (ya fue cerrado o no tuvo movimientos)`,
+    };
+}
+
 export default findPendingClosureDates;
