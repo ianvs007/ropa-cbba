@@ -11,6 +11,9 @@ import { db, getLocalISOString } from '../db';
 import useCashRegister from '../hooks/useCashRegister';
 import CashOpenModal from './CashOpenModal';
 import PendingClosuresBanner from './PendingClosuresBanner';
+import { useSecureDate } from '../hooks/useSecureDate';
+import { usePendingClosureDates } from '../hooks/usePendingClosureDates';
+import { getExitWarning } from '../utils/exitWarning';
 import { useUser } from '../contexts/UserContext';
 import { hasPermission, PERMISSIONS } from '../utils/permissions';
 
@@ -82,6 +85,35 @@ export default function Layout({ children }) {
     // ── Apertura de caja obligatoria para vendedores ──
     const { isOpen: cashIsOpen, isClosed: cashIsClosed, openCash, isLoading: cashLoading } = useCashRegister();
     const needsCashOpen = user.role !== 'admin' && !cashIsOpen && !cashIsClosed && !cashLoading;
+
+    // ── Aviso al salir con caja sin cerrar (Cerrar Sesión o cerrar la app) ──
+    const { today: secureToday } = useSecureDate();
+    const pendingCloseDates = usePendingClosureDates(secureToday);
+    const exitWarningData = getExitWarning({
+        role: user?.role,
+        cashOpenToday: !!cashIsOpen,
+        pendingDates: pendingCloseDates || [],
+    });
+    const [exitWarning, setExitWarning] = React.useState(null); // aviso visible al pulsar Cerrar Sesión
+
+    const handleLogout = () => {
+        if (exitWarningData) setExitWarning(exitWarningData);
+        else logout();
+    };
+
+    // Cierre de la app (botón X de la ventana / refresh): el navegador solo
+    // permite un diálogo genérico de confirmación vía beforeunload, sin texto
+    // propio — se registra únicamente cuando hay algo que avisar
+    const warnOnExit = !!exitWarningData;
+    React.useEffect(() => {
+        if (!warnOnExit) return;
+        const handler = (e) => {
+            e.preventDefault();
+            e.returnValue = '';
+        };
+        window.addEventListener('beforeunload', handler);
+        return () => window.removeEventListener('beforeunload', handler);
+    }, [warnOnExit]);
 
     // ── Modal obligatorio: mostrar solo una vez por sesión ──
     const [pendingModalDismissed, setPendingModalDismissed] = React.useState(false);
@@ -171,7 +203,7 @@ export default function Layout({ children }) {
 
                 {/* Logout */}
                 <div className="p-2.5 border-t border-white/10 shrink-0">
-                    <button onClick={logout}
+                    <button onClick={handleLogout}
                         aria-label="Cerrar sesión"
                         className="flex items-center gap-2.5 w-full px-3 py-2 rounded-xl
                                        text-white/60 hover:text-white hover:bg-red-500/20
@@ -259,6 +291,51 @@ export default function Layout({ children }) {
             {/* ══════════════════ MODAL APERTURA DE CAJA ══════════════════ */}
             {showCashOpenModal && (
                 <CashOpenModal onOpen={openCash} />
+            )}
+
+            {/* ══════════════ MODAL AVISO AL CERRAR SESIÓN CON CAJA ABIERTA ══════════════ */}
+            {exitWarning && (
+                <div className="fixed inset-0 bg-black/60 z-[110] flex items-center justify-center p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full overflow-hidden animate-[fadeIn_0.3s_ease-out]">
+                        <div role="alert" className="bg-gradient-to-r from-orange-500 to-red-500 p-6 text-white text-center">
+                            <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-3">
+                                <AlertTriangle size={32} />
+                            </div>
+                            <h2 className="text-xl font-bold">¿Salir sin cerrar caja?</h2>
+                            <p className="text-orange-100 text-sm mt-1">{exitWarning.message}</p>
+                        </div>
+                        <div className="p-6 space-y-3">
+                            <p className="text-gray-600 text-sm text-center">
+                                Se recomienda hacer el cierre de caja antes de salir para no acumular días pendientes.
+                            </p>
+                            <button
+                                onClick={() => {
+                                    setExitWarning(null);
+                                    navigate('/cash');
+                                }}
+                                className="w-full h-12 bg-gradient-to-r from-pink-600 to-rose-600 text-white font-bold rounded-xl hover:shadow-lg hover:shadow-pink-200 transition flex items-center justify-center gap-2"
+                            >
+                                <DollarSign size={18} />
+                                Ir a Cierre de Caja
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setExitWarning(null);
+                                    logout();
+                                }}
+                                className="w-full h-10 text-red-400 text-sm font-bold hover:text-red-600 transition"
+                            >
+                                Salir de todos modos
+                            </button>
+                            <button
+                                onClick={() => setExitWarning(null)}
+                                className="w-full h-10 text-gray-400 text-sm font-medium hover:text-gray-600 transition"
+                            >
+                                Volver al sistema
+                            </button>
+                        </div>
+                    </div>
+                </div>
             )}
         </div>
     );
