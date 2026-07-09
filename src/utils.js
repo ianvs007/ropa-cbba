@@ -5,7 +5,7 @@ import { db } from './db';
  * Función global para imprimir un ticket de venta
  * Utilizada tanto en el Punto de Venta (POS) como en el Historial de Ventas
  */
-export const printTicketGlobal = async (saleId, cart, total, payment, receivedVal, changeAmount, user, discount = 0) => {
+export const printTicketGlobal = async (saleId, cart, total, payment, receivedVal, changeAmount, user, discount = 0, client = null) => {
     // Obtener configuración desde Dexie
     const settingsArr = await db.settings.toArray();
     const settings = {};
@@ -48,7 +48,13 @@ export const printTicketGlobal = async (saleId, cart, total, payment, receivedVa
     doc.text(`Fecha: ${new Date().toLocaleString()}`, 10, y);
     doc.text(`Venta #${saleId}`, pageWidth - 10, y, { align: 'right' }); y += 5;
     doc.text(`Vendedor: ${user?.name || user?.username || 'N/A'}`, 10, y); y += 6;
-    
+    if (client?.name) {
+        const clientLine = client.phone
+            ? `Cliente: ${client.name}   Cel: ${client.phone}`
+            : `Cliente: ${client.name}`;
+        doc.text(clientLine, 10, y); y += 6;
+    }
+
     doc.line(10, y, pageWidth - 10, y); y += 5;
     
     // Cabeceras de tabla
