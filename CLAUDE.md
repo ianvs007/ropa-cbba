@@ -90,8 +90,9 @@ zip **`ropa-cbba-v3-cierres-pendientes-20260708.zip`**:
 
 ### ✅ En producción (main, zip v4 — 09/07/2026)
 
-Merges `03b5f98` + `bf493f6`, build `6ff1bf6`, zip
-**`ropa-cbba-v4-cliente-caja-20260709.zip`**:
+Merges `03b5f98` + `bf493f6` + fix de banner/rename (`73313fc`, `31a70e4`),
+build final `556177b`, zip **`ropa-cbba-v4-cliente-caja-20260709.zip`**
+(regenerado el 09/07 con los items 6-9; reemplaza al zip v4 anterior):
 
 6. **Cliente opcional en la venta** (`07dd13d`..`2844624`, rama
    `feature/cliente-en-venta`): botón "➕ Añadir cliente (opcional)" en el POS;
@@ -107,6 +108,18 @@ Merges `03b5f98` + `bf493f6`, build `6ff1bf6`, zip
    del indicador ARQUEO → COMPLETADO; eliminado el botón "Ver Siguiente Día"
    (`handleNewDate` podía caer en fecha futura bloqueada); formulario de arqueo
    deduplicado en el subcomponente `ArqueoFisicoCard` (prop `showEditPill`).
+
+8. **Eliminado el banner naranja legacy del Dashboard** (`73313fc`): su
+   "Detector de Cierres Olvidados" recorría toda la historia sin ventana de
+   60 días, con `new Date()` en vez de la fecha segura y sin la semántica
+   retroactiva — le reclamaba al admin días viejos imposibles de regularizar.
+   La detección queda SOLO en `findPendingClosureDates`/`usePendingClosureDates`.
+   ⚠️ PENDIENTE de validar visualmente: que el banner rojo aparezca en el rol
+   cajero cuando exista un día realmente pendiente (en las pruebas de escritorio
+   no había pendientes dentro de la ventana y no se pudo confirmar en pantalla).
+9. **Menú del vendedor renombrado** "Cierre de Caja" → "Abrir/Cerrar Caja"
+   (`31a70e4`); el badge de pendientes del menú ahora se ancla a la ruta
+   `/cash` (no al texto del label) para sobrevivir futuros renames.
 
 ### 🔜 Posibles siguientes pasos (no comprometidos)
 
