@@ -397,13 +397,11 @@ export default function CashClose() {
     const renderClosureForm = () => (
         <div className="space-y-6">
             {/* Encabezado Principal */}
-            {/* Encabezado Principal - CAMBIADO A AZUL PARA VERIFICACIÓN DE CÓDIGO */}
             <div className="bg-gradient-to-r from-blue-600 to-indigo-700 rounded-2xl p-6 text-white shadow-xl shadow-blue-900/20">
                 <div className="flex items-center justify-between">
                     <div>
                         <div className="flex items-center gap-2 mb-1">
                             <h2 className="text-xl font-black uppercase tracking-tight">Cierre de Caja</h2>
-                            <span className="bg-white/20 px-2 py-0.5 rounded-lg text-[10px] uppercase font-black tracking-widest leading-none">V-FINAL</span>
                         </div>
                         <div className="flex items-center gap-2 text-blue-100 text-sm font-bold bg-blue-900/30 px-3 py-1.5 rounded-xl border border-blue-400/20">
                             <div className="w-2 h-2 rounded-full bg-green-400 shadow-sm shadow-green-400" />
