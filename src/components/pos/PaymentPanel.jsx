@@ -18,11 +18,18 @@ import { formatCurrency } from '../../utils';
 export default function PaymentPanel({ total, totalDiscount = 0, currency, cart, loading, success, error, onSell, onClear }) {
     const [payment, setPayment] = React.useState('efectivo');
     const [received, setReceived] = React.useState('');
+    const [showClient, setShowClient] = React.useState(false);
+    const [clientName, setClientName] = React.useState('');
+    const [clientPhone, setClientPhone] = React.useState('');
 
     const receivedVal = parseFloat(received || 0);
     const changeAmount = receivedVal - total;
 
-    const handleSell = () => onSell({ payment, received: receivedVal });
+    const handleSell = () => onSell({
+        payment,
+        received: receivedVal,
+        client: clientName.trim() ? { name: clientName.trim(), phone: clientPhone.trim() } : null,
+    });
 
     // F12 global para cobrar
     React.useEffect(() => {
@@ -31,9 +38,16 @@ export default function PaymentPanel({ total, totalDiscount = 0, currency, cart,
         };
         window.addEventListener('keydown', handleKey);
         return () => window.removeEventListener('keydown', handleKey);
-    }, [cart.length, loading, payment, receivedVal]);
+    }, [cart.length, loading, payment, receivedVal, clientName, clientPhone]);
 
-    React.useEffect(() => { if (success) setReceived(''); }, [success]);
+    React.useEffect(() => {
+        if (success) {
+            setReceived('');
+            setClientName('');
+            setClientPhone('');
+            setShowClient(false);
+        }
+    }, [success]);
 
     const lastPhoto = cart.length > 0 ? cart[cart.length - 1] : null;
 
@@ -98,6 +112,38 @@ export default function PaymentPanel({ total, totalDiscount = 0, currency, cart,
                     />
                 </div>
             )}
+
+            {/* Cliente opcional (para que figure en el ticket) */}
+            <div className="pt-2 border-t border-pink-50 space-y-2">
+                <button
+                    type="button"
+                    onClick={() => setShowClient(v => !v)}
+                    className={`w-full py-2 px-3 rounded-xl text-xs font-semibold border transition-all text-left
+                        ${clientName.trim()
+                            ? 'border-pink-400 bg-pink-50 text-pink-700'
+                            : 'border-pink-100 text-pink-400 hover:border-pink-300'}`}>
+                    {clientName.trim() ? `✓ Cliente: ${clientName.trim()}` : '➕ Añadir cliente (opcional)'}
+                </button>
+                {showClient && (
+                    <div className="space-y-2 fade-in">
+                        <input
+                            type="text"
+                            value={clientName}
+                            onChange={e => setClientName(e.target.value)}
+                            placeholder="Nombre del cliente"
+                            className="fashion-input h-10 text-sm"
+                        />
+                        <input
+                            type="tel"
+                            inputMode="numeric"
+                            value={clientPhone}
+                            onChange={e => setClientPhone(e.target.value)}
+                            placeholder="Celular"
+                            className="fashion-input h-10 text-sm"
+                        />
+                    </div>
+                )}
+            </div>
 
             {/* Feedback de éxito */}
             {success && (

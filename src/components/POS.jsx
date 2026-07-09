@@ -120,7 +120,7 @@ export default function POS() {
         }));
     };
 
-    const handleSale = async ({ payment, received }) => {
+    const handleSale = async ({ payment, received, client }) => {
         if (cart.length === 0) return;
         setLoading(true); setError('');
         try {
@@ -236,13 +236,15 @@ export default function POS() {
                         sellerId: user?.id,
                         sellerName: user?.name || user?.username,
                         shiftId: shiftId || undefined,
+                        clientName: client?.name || undefined,
+                        clientPhone: client?.phone || undefined,
                     });
 
                     return { saleId: id, cartWithCodes: itemsWithCodes };
                 });
 
             await syncClosureIfDateExists(nowAdjusted, user?.id, shiftId);
-            printTicketGlobal(saleId, cartWithCodes, total, payment, received, received - total, user, totalDiscount);
+            printTicketGlobal(saleId, cartWithCodes, total, payment, received, received - total, user, totalDiscount, client);
 
             setCart([]);
             setSuccess(true);
