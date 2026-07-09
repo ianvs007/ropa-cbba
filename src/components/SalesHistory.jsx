@@ -453,6 +453,11 @@ Esta acción:
                                                     </div>
                                                 );
                                             })}
+                                            {s.clientName && (
+                                                <p className="mt-1.5 pt-1.5 border-t border-pink-50 text-[10px] text-pink-500">
+                                                    Cliente: <b>{s.clientName}</b>{s.clientPhone ? ` — ${s.clientPhone}` : ''}
+                                                </p>
+                                            )}
                                         </td>
                                         <td className="px-4 py-3 font-bold text-pink-800">
                                             {currency}{s.total?.toFixed(2)}
@@ -482,7 +487,8 @@ Esta acción:
                                                         s.id, enriched, s.total, s.paymentMethod || 'historial',
                                                         s.received || s.total, s.change || 0,
                                                         { name: s.sellerName },
-                                                        s.discount || 0
+                                                        s.discount || 0,
+                                                        s.clientName ? { name: s.clientName, phone: s.clientPhone } : null
                                                     );
                                                 }}
                                                     className="text-blue-500 hover:text-blue-700 transition-colors"
