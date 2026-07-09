@@ -10,7 +10,7 @@ import { canCloseCashDate } from '../utils/pendingClosures';
 import {
     DollarSign, TrendingUp, Receipt, Package, CheckCircle,
     AlertTriangle, Printer, ChevronRight, Wallet, CreditCard,
-    PiggyBank, Calculator, ClipboardList, ArrowRight, Lock
+    PiggyBank, Calculator, ClipboardList, Lock
 } from 'lucide-react';
 import { useNotification } from '../hooks/useNotification';
 import { formatCurrency, printCashCloseGlobal } from '../utils';
@@ -382,17 +382,6 @@ export default function CashClose() {
         });
     };
 
-    const handleNewDate = () => {
-        const nextDate = new Date(new Date(date).getTime() + 86400000).toISOString().slice(0, 10);
-        setDate(nextDate);
-        setCashStart('');
-        setCashCount('');
-        setNotes('');
-        setExistingId(null);
-        setIsEditing(false);
-        setStep(1);
-    };
-
     // ── Render: Paso 1 - Formulario de Cierre (Resumen + Arqueo) ────────
     const renderClosureForm = () => (
         <div className="space-y-6">
@@ -528,90 +517,26 @@ export default function CashClose() {
                         </div>
 
                         {/* Formulario de Arqueo — siempre visible para turnos abiertos */}
-                        <div className="space-y-4">
-                            <div className="fashion-card p-5 border-2 border-blue-100">
-                                <div className="flex items-center justify-between mb-4">
-                                    <h3 className="font-bold text-blue-900 flex items-center gap-2">
-                                        <DollarSign size={18} className="text-blue-600" />
-                                        Arqueo Físico
-                                    </h3>
-                                </div>
-
-                                <div className="space-y-4">
-                                    <div>
-                                        <label className="block text-[11px] font-bold text-gray-400 uppercase mb-1">
-                                            Fondo de Inicio
-                                            {todayOpening && !existingId && (
-                                                <span className="ml-2 text-emerald-500 font-bold">✓ Registrado en apertura</span>
-                                            )}
-                                        </label>
-                                        <input
-                                            type="text"
-                                            inputMode="decimal"
-                                            value={cashStart}
-                                            onChange={e => setCashStart(e.target.value)}
-                                            disabled={(!!existingId && !isEditing) || (!!todayOpening && !existingId)}
-                                            className="w-full fashion-input h-10 font-bold"
-                                            placeholder="0.00"
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="block text-[11px] font-bold text-gray-400 uppercase mb-1">Efectivo en Caja (Contado)</label>
-                                        <input
-                                            type="text"
-                                            inputMode="decimal"
-                                            value={cashCount}
-                                            onChange={e => setCashCount(e.target.value)}
-                                            disabled={!!existingId && !isEditing}
-                                            className="w-full fashion-input h-12 text-lg font-black border-2 focus:border-pink-500"
-                                            placeholder="0.00"
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="block text-[11px] font-bold text-gray-400 uppercase mb-1">Observaciones</label>
-                                        <textarea
-                                            value={notes}
-                                            onChange={e => setNotes(e.target.value)}
-                                            disabled={!!existingId && !isEditing}
-                                            className="w-full fashion-input h-16 resize-none text-sm"
-                                            placeholder="Notas opcionales..."
-                                        />
-                                    </div>
-                                </div>
-
-                                {/* Diferencia Dinámica */}
-                                {(cashStart || cashCount) && (
-                                    <div className="mt-4 p-3 rounded-xl bg-gray-50 border border-gray-200">
-                                        <div className="flex justify-between items-center mb-1">
-                                            <span className="text-xs text-gray-500">Debería haber:</span>
-                                            <span className="text-sm font-bold text-gray-700">{formatCurrency(totalCashExpected, currency)}</span>
-                                        </div>
-                                        <div className="flex justify-between items-center">
-                                            <span className="text-xs font-bold text-gray-700">Diferencia:</span>
-                                            <span className={`text-base font-black ${
-                                                isBalanced ? 'text-green-600' :
-                                                cashDifference > 0 ? 'text-blue-600' : 'text-red-600'
-                                            }`}>
-                                                {cashDifference >= 0 ? '+' : ''}{formatCurrency(cashDifference, currency)}
-                                            </span>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-
-                            <button
-                                onClick={handleSave}
-                                disabled={(cashStart === '' && !cashStartIsFromOpening) || cashCount === '' || isManipulated}
-                                className={`w-full h-14 rounded-2xl font-bold text-lg flex items-center justify-center gap-2 transition shadow-lg
-                                    ${(cashStart === '' && !cashStartIsFromOpening) || cashCount === '' || isManipulated
-                                        ? 'bg-gray-200 text-gray-400 cursor-not-allowed shadow-none'
-                                        : 'bg-gradient-to-r from-pink-500 to-pink-600 text-white hover:shadow-pink-200'
-                                    }`}
-                            >
-                                <CheckCircle size={22} />
-                                {existingId ? 'Actualizar Cierre' : 'Guardar y Cerrar Caja'}
-                            </button>
-                        </div>
+                        <ArqueoFisicoCard
+                            cashStart={cashStart}
+                            setCashStart={setCashStart}
+                            cashCount={cashCount}
+                            setCashCount={setCashCount}
+                            notes={notes}
+                            setNotes={setNotes}
+                            existingId={existingId}
+                            isEditing={isEditing}
+                            todayOpening={todayOpening}
+                            cashStartIsFromOpening={cashStartIsFromOpening}
+                            totalCashExpected={totalCashExpected}
+                            cashDifference={cashDifference}
+                            isBalanced={isBalanced}
+                            isManipulated={isManipulated}
+                            currency={currency}
+                            handleSave={handleSave}
+                            handleEnableEdit={handleEnableEdit}
+                            existing={existing}
+                        />
                     </>
                 ) : (
                     <div className="text-center py-12">
@@ -711,102 +636,27 @@ export default function CashClose() {
                         </div>
 
                         {/* Columna Derecha: Formulario de Arqueo */}
-                        <div className="space-y-4">
-                            <div className="fashion-card p-5 border-2 border-blue-100">
-                                <div className="flex items-center justify-between mb-4">
-                                    <h3 className="font-bold text-blue-900 flex items-center gap-2">
-                                        <DollarSign size={18} className="text-blue-600" />
-                                        Arqueo Físico
-                                    </h3>
-                                    {existingId && !isEditing && (
-                                        <button
-                                            onClick={handleEnableEdit}
-                                            className={`text-[10px] font-bold px-2 py-1 rounded-full border transition-colors ${
-                                                existing?.closedAt
-                                                    ? 'text-orange-600 bg-orange-50 border-orange-100 hover:bg-orange-100'
-                                                    : 'text-pink-600 bg-pink-50 border-pink-100 hover:bg-pink-100'
-                                            }`}
-                                        >
-                                            {existing?.closedAt ? '✏️ CORREGIR' : 'EDITAR'}
-                                        </button>
-                                    )}
-                                </div>
-
-                                <div className="space-y-4">
-                                    <div>
-                                        <label className="block text-[11px] font-bold text-gray-400 uppercase mb-1">
-                                            Fondo de Inicio
-                                            {todayOpening && !existingId && (
-                                                <span className="ml-2 text-emerald-500 font-bold">✓ Registrado en apertura</span>
-                                            )}
-                                        </label>
-                                        <input
-                                            type="text"
-                                            inputMode="decimal"
-                                            value={cashStart}
-                                            onChange={e => setCashStart(e.target.value)}
-                                            disabled={(!!existingId && !isEditing) || (!!todayOpening && !existingId)}
-                                            className="w-full fashion-input h-10 font-bold"
-                                            placeholder="0.00"
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="block text-[11px] font-bold text-gray-400 uppercase mb-1">Efectivo en Caja (Contado)</label>
-                                        <input
-                                            type="text"
-                                            inputMode="decimal"
-                                            value={cashCount}
-                                            onChange={e => setCashCount(e.target.value)}
-                                            disabled={!!existingId && !isEditing}
-                                            className="w-full fashion-input h-12 text-lg font-black border-2 focus:border-pink-500"
-                                            placeholder="0.00"
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="block text-[11px] font-bold text-gray-400 uppercase mb-1">Observaciones</label>
-                                        <textarea
-                                            value={notes}
-                                            onChange={e => setNotes(e.target.value)}
-                                            disabled={!!existingId && !isEditing}
-                                            className="w-full fashion-input h-16 resize-none text-sm"
-                                            placeholder="Notas opcionales..."
-                                        />
-                                    </div>
-                                </div>
-
-                                {/* Diferencia Dinámica */}
-                                {(cashStart || cashCount) && (
-                                    <div className="mt-4 p-3 rounded-xl bg-gray-50 border border-gray-200">
-                                        <div className="flex justify-between items-center mb-1">
-                                            <span className="text-xs text-gray-500">Debería haber:</span>
-                                            <span className="text-sm font-bold text-gray-700">{formatCurrency(totalCashExpected, currency)}</span>
-                                        </div>
-                                        <div className="flex justify-between items-center">
-                                            <span className="text-xs font-bold text-gray-700">Diferencia:</span>
-                                            <span className={`text-base font-black ${
-                                                isBalanced ? 'text-green-600' :
-                                                cashDifference > 0 ? 'text-blue-600' : 'text-red-600'
-                                            }`}>
-                                                {cashDifference >= 0 ? '+' : ''}{formatCurrency(cashDifference, currency)}
-                                            </span>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-
-                            <button
-                                onClick={handleSave}
-                                disabled={(cashStart === '' && !cashStartIsFromOpening) || cashCount === '' || isManipulated}
-                                className={`w-full h-14 rounded-2xl font-bold text-lg flex items-center justify-center gap-2 transition shadow-lg
-                                    ${(cashStart === '' && !cashStartIsFromOpening) || cashCount === '' || isManipulated
-                                        ? 'bg-gray-200 text-gray-400 cursor-not-allowed shadow-none'
-                                        : 'bg-gradient-to-r from-pink-500 to-pink-600 text-white hover:shadow-pink-200'
-                                    }`}
-                            >
-                                <CheckCircle size={22} />
-                                {existingId ? 'Actualizar Cierre' : 'Guardar y Cerrar Caja'}
-                            </button>
-                        </div>
+                        <ArqueoFisicoCard
+                            cashStart={cashStart}
+                            setCashStart={setCashStart}
+                            cashCount={cashCount}
+                            setCashCount={setCashCount}
+                            notes={notes}
+                            setNotes={setNotes}
+                            existingId={existingId}
+                            isEditing={isEditing}
+                            todayOpening={todayOpening}
+                            cashStartIsFromOpening={cashStartIsFromOpening}
+                            totalCashExpected={totalCashExpected}
+                            cashDifference={cashDifference}
+                            isBalanced={isBalanced}
+                            isManipulated={isManipulated}
+                            currency={currency}
+                            handleSave={handleSave}
+                            handleEnableEdit={handleEnableEdit}
+                            existing={existing}
+                            showEditPill
+                        />
                     </div>
                 </>
             )}
@@ -837,19 +687,6 @@ export default function CashClose() {
                     <div>
                         <p className="font-bold text-pink-900">Imprimir Reporte</p>
                         <p className="text-xs text-pink-400">Obtener comprobante detallado en PDF</p>
-                    </div>
-                </button>
-
-                <button
-                    onClick={handleNewDate}
-                    className="flex flex-col items-center gap-3 p-6 bg-white border-2 border-blue-100 rounded-3xl hover:bg-blue-50 transition shadow-sm group"
-                >
-                    <div className="w-14 h-14 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center group-hover:scale-110 transition">
-                        <ArrowRight size={28} />
-                    </div>
-                    <div>
-                        <p className="font-bold text-blue-900">Ver Siguiente Día</p>
-                        <p className="text-xs text-blue-400">Continuar con la fecha posterior</p>
                     </div>
                 </button>
 
@@ -972,6 +809,118 @@ export default function CashClose() {
 }
 
 // ── Componentes Auxiliares ────────────────────────────────────────────
+
+/**
+ * Card de Arqueo Físico (Fondo de Inicio + Efectivo Contado + Observaciones +
+ * Diferencia Dinámica + botón Guardar). Se usa tanto en la rama "turno sin
+ * ventas" como en la rama normal de renderClosureForm; solo la rama normal
+ * muestra el pill EDITAR/CORREGIR (showEditPill).
+ */
+function ArqueoFisicoCard({
+    cashStart, setCashStart, cashCount, setCashCount, notes, setNotes,
+    existingId, isEditing, todayOpening, cashStartIsFromOpening,
+    totalCashExpected, cashDifference, isBalanced, isManipulated,
+    currency, handleSave, handleEnableEdit, existing, showEditPill = false,
+}) {
+    return (
+        <div className="space-y-4">
+            <div className="fashion-card p-5 border-2 border-blue-100">
+                <div className="flex items-center justify-between mb-4">
+                    <h3 className="font-bold text-blue-900 flex items-center gap-2">
+                        <DollarSign size={18} className="text-blue-600" />
+                        Arqueo Físico
+                    </h3>
+                    {showEditPill && existingId && !isEditing && (
+                        <button
+                            onClick={handleEnableEdit}
+                            className={`text-[10px] font-bold px-2 py-1 rounded-full border transition-colors ${
+                                existing?.closedAt
+                                    ? 'text-orange-600 bg-orange-50 border-orange-100 hover:bg-orange-100'
+                                    : 'text-pink-600 bg-pink-50 border-pink-100 hover:bg-pink-100'
+                            }`}
+                        >
+                            {existing?.closedAt ? '✏️ CORREGIR' : 'EDITAR'}
+                        </button>
+                    )}
+                </div>
+
+                <div className="space-y-4">
+                    <div>
+                        <label className="block text-[11px] font-bold text-gray-400 uppercase mb-1">
+                            Fondo de Inicio
+                            {todayOpening && !existingId && (
+                                <span className="ml-2 text-emerald-500 font-bold">✓ Registrado en apertura</span>
+                            )}
+                        </label>
+                        <input
+                            type="text"
+                            inputMode="decimal"
+                            value={cashStart}
+                            onChange={e => setCashStart(e.target.value)}
+                            disabled={(!!existingId && !isEditing) || (!!todayOpening && !existingId)}
+                            className="w-full fashion-input h-10 font-bold"
+                            placeholder="0.00"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-[11px] font-bold text-gray-400 uppercase mb-1">Efectivo en Caja (Contado)</label>
+                        <input
+                            type="text"
+                            inputMode="decimal"
+                            value={cashCount}
+                            onChange={e => setCashCount(e.target.value)}
+                            disabled={!!existingId && !isEditing}
+                            className="w-full fashion-input h-12 text-lg font-black border-2 focus:border-pink-500"
+                            placeholder="0.00"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-[11px] font-bold text-gray-400 uppercase mb-1">Observaciones</label>
+                        <textarea
+                            value={notes}
+                            onChange={e => setNotes(e.target.value)}
+                            disabled={!!existingId && !isEditing}
+                            className="w-full fashion-input h-16 resize-none text-sm"
+                            placeholder="Notas opcionales..."
+                        />
+                    </div>
+                </div>
+
+                {/* Diferencia Dinámica */}
+                {(cashStart || cashCount) && (
+                    <div className="mt-4 p-3 rounded-xl bg-gray-50 border border-gray-200">
+                        <div className="flex justify-between items-center mb-1">
+                            <span className="text-xs text-gray-500">Debería haber:</span>
+                            <span className="text-sm font-bold text-gray-700">{formatCurrency(totalCashExpected, currency)}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                            <span className="text-xs font-bold text-gray-700">Diferencia:</span>
+                            <span className={`text-base font-black ${
+                                isBalanced ? 'text-green-600' :
+                                cashDifference > 0 ? 'text-blue-600' : 'text-red-600'
+                            }`}>
+                                {cashDifference >= 0 ? '+' : ''}{formatCurrency(cashDifference, currency)}
+                            </span>
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            <button
+                onClick={handleSave}
+                disabled={(cashStart === '' && !cashStartIsFromOpening) || cashCount === '' || isManipulated}
+                className={`w-full h-14 rounded-2xl font-bold text-lg flex items-center justify-center gap-2 transition shadow-lg
+                    ${(cashStart === '' && !cashStartIsFromOpening) || cashCount === '' || isManipulated
+                        ? 'bg-gray-200 text-gray-400 cursor-not-allowed shadow-none'
+                        : 'bg-gradient-to-r from-pink-500 to-pink-600 text-white hover:shadow-pink-200'
+                    }`}
+            >
+                <CheckCircle size={22} />
+                {existingId ? 'Actualizar Cierre' : 'Guardar y Cerrar Caja'}
+            </button>
+        </div>
+    );
+}
 
 function KpiCard({ label, value, icon: Icon, color }) {
     const colorClasses = {
