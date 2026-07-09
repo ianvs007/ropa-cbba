@@ -20,7 +20,7 @@ import { useUser } from '../contexts/UserContext';
 
 /**
  * 💰 CashClose — Cierre de Caja Unificado
- * Flujo en 3 pasos: 1) Resumen → 2) Arqueo → 3) Confirmación
+ * Flujo en 2 pasos: 1) Arqueo → 2) Completado
  */
 export default function CashClose() {
     const { user } = useUser();
@@ -223,11 +223,11 @@ export default function CashClose() {
     const handleEnableEdit = () => {
         if (existing?.closedAt) {
             const confirmReopen = window.confirm(
-                `🔓 REAPERTURA DE CIERRE\n\n` +
+                `✏️ CORREGIR CIERRE\n\n` +
                 `Fecha: ${new Date(existing.closedAt).toLocaleString('es')}\n\n` +
-                `Deseas REABRIRSE este cierre para:\n` +
-                `✓ Corregir datos del arqueo\n\n` +
-                `Se registrará en auditoría automáticamente.\n\n` +
+                `¿Deseas corregir los datos del arqueo de este cierre?\n` +
+                `El turno seguirá cerrado.\n` +
+                `El cambio quedará registrado en auditoría automáticamente.\n\n` +
                 `¿Continuar?`
             );
             if (!confirmReopen) return;
@@ -727,7 +727,7 @@ export default function CashClose() {
                                                     : 'text-pink-600 bg-pink-50 border-pink-100 hover:bg-pink-100'
                                             }`}
                                         >
-                                            {existing?.closedAt ? '🔓 REABRIR' : 'EDITAR'}
+                                            {existing?.closedAt ? '✏️ CORREGIR' : 'EDITAR'}
                                         </button>
                                     )}
                                 </div>
@@ -863,7 +863,7 @@ export default function CashClose() {
                         </div>
                         <div>
                             <p className="font-bold text-emerald-900">Reabrir Caja</p>
-                            <p className="text-xs text-emerald-500">Seguir vendiendo y cerrar después</p>
+                            <p className="text-xs text-emerald-500">Reabre el turno para seguir vendiendo; harás un nuevo cierre al final</p>
                         </div>
                     </button>
                 )}
@@ -881,7 +881,7 @@ export default function CashClose() {
                         </div>
                         <div>
                             <p className="font-bold text-orange-900">Corregir Cierre</p>
-                            <p className="text-xs text-orange-400">Editar datos del arqueo</p>
+                            <p className="text-xs text-orange-400">Solo edita los montos del arqueo; el turno sigue cerrado</p>
                         </div>
                     </button>
                 )}
@@ -953,7 +953,7 @@ export default function CashClose() {
                         ${step === 1 ? 'bg-pink-600 text-white ring-4 ring-pink-100 scale-110' : 'bg-green-500 text-white'}`}>
                         {step === 1 ? '1' : <CheckCircle size={20} />}
                     </div>
-                    <span className={`text-[10px] font-black tracking-widest ${step === 1 ? 'text-pink-900' : 'text-green-600'}`}>FORMULARIO</span>
+                    <span className={`text-[10px] font-black tracking-widest ${step === 1 ? 'text-pink-900' : 'text-green-600'}`}>ARQUEO</span>
                 </div>
                 <div className={`w-12 h-1 rounded-full ${step === 2 ? 'bg-green-500' : 'bg-gray-200'}`} />
                 <div className="flex flex-col items-center gap-2">
@@ -961,7 +961,7 @@ export default function CashClose() {
                         ${step === 2 ? 'bg-pink-600 text-white ring-4 ring-pink-100 scale-110' : 'bg-gray-200 text-gray-400'}`}>
                         2
                     </div>
-                    <span className={`text-[10px] font-black tracking-widest ${step === 2 ? 'text-pink-900' : 'text-gray-400'}`}>ÉXITO</span>
+                    <span className={`text-[10px] font-black tracking-widest ${step === 2 ? 'text-pink-900' : 'text-gray-400'}`}>COMPLETADO</span>
                 </div>
             </div>
 
