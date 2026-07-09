@@ -41,7 +41,7 @@ const NAV_SELLER = [
     { label: 'Reservas', path: '/reservations', icon: Tag },
     { label: 'Historial de ventas y gastos', path: '/sales', icon: ClipboardList },
     { label: 'Gastos', path: '/expenses', icon: Receipt },
-    { label: 'Cierre de Caja', path: '/cash', icon: DollarSign },
+    { label: 'Abrir/Cerrar Caja', path: '/cash', icon: DollarSign },
 ];
 
 export default function Layout({ children }) {
@@ -192,7 +192,7 @@ export default function Layout({ children }) {
                                     {badge}
                                 </span>
                             )}
-                            {label === 'Cierre de Caja' && hasPendingClosures && (
+                            {path === '/cash' && hasPendingClosures && (
                                 <span className="ml-auto bg-red-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.6)]">
                                     {pendingClosures.length}
                                 </span>

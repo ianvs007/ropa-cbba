@@ -3,10 +3,9 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getLocalISOString } from '../../db';
 import {
     TrendingUp, ShoppingBag, Package, AlertTriangle,
-    DollarSign, BarChart2, Award, Calendar, AlertCircle, ArrowRight,
+    DollarSign, BarChart2, Award,
     Receipt
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
 import {
     BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
     ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell, Legend
@@ -24,12 +23,9 @@ export default function Dashboard() {
 
     const sales = useLiveQuery(() => db.sales.toArray(), []);
     const products = useLiveQuery(() => db.products.toArray(), []);
-    const closures = useLiveQuery(() => db.table('cashClosures').toArray(), []);
     const resPayments = useLiveQuery(() => db.reservationPayments.toArray(), []);
     const expenses = useLiveQuery(() => db.expenses.toArray(), []);
     const reservations = useLiveQuery(() => db.reservations.toArray(), []);
-    
-    const navigate = useNavigate();
 
     // ── KPIs ──
     const today = getLocalISOString().slice(0, 10);
@@ -135,61 +131,12 @@ export default function Dashboard() {
         { label: 'Sin Stock', value: outStock.length, icon: ShoppingBag, color: '#DC2626', bg: '#FEF2F2' },
     ];
 
-    // ── Detector de Cierres Olvidados ──
-    const pendingClosures = React.useMemo(() => {
-        if (!sales || !closures || !resPayments) return [];
-        
-        // 1. Obtener todas las fechas con actividad (Ventas o Abonos) de forma segura
-        const datesWithActivity = new Set([
-            ...(sales || []).filter(s => s.status !== 'annulled').map(s => s.date?.slice(0, 10)),
-            ...(resPayments || []).filter(p => p.status !== 'annulled' && activeResIds.has(p.reservationId)).map(p => p.date?.slice(0, 10))
-        ].filter(d => d && typeof d === 'string' && d.length >= 10));
-
-        // 2. Obtener fechas ya cerradas
-        const closedDates = new Set(closures.map(c => c.date));
-
-        // 3. Filtrar fechas con actividad pero sin cierre (excluyendo hoy)
-        const todayStr = getLocalISOString().slice(0, 10);
-        return Array.from(datesWithActivity)
-            .filter(d => !closedDates.has(d) && d < todayStr)
-            .sort((a, b) => b.localeCompare(a)); // Más recientes primero
-    }, [sales, closures, resPayments]);
-
     return (
         <div className="max-w-7xl mx-auto fade-in">
             <h1 className="text-2xl font-bold text-pink-900 mb-5 flex items-center gap-2">
                 <BarChart2 size={24} strokeWidth={1.8} className="text-pink-600" />
                 Dashboard
             </h1>
-
-            {/* ── Alerta de Cierres Pendientes ── */}
-            {pendingClosures.length > 0 && (
-                <div className="mb-6 bg-gradient-to-r from-orange-500 to-rose-600 rounded-2xl p-4 text-white shadow-lg border border-orange-400/30 overflow-hidden relative">
-                    <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
-                        <AlertCircle size={80} strokeWidth={1} />
-                    </div>
-                    <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                        <div className="flex items-start gap-3">
-                            <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center shrink-0">
-                                <Calendar size={20} className="text-white" />
-                            </div>
-                            <div>
-                                <h3 className="font-bold text-lg leading-tight text-white">¡Atención! Tienes cierres pendientes</h3>
-                                <p className="text-sm text-orange-100 italic">No registraste el cierre de {pendingClosures.length} día(s) con ventas.</p>
-                            </div>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                            {pendingClosures.slice(0, 3).map(date => (
-                                <button key={date} onClick={() => navigate('/cash')}
-                                    className="px-4 py-2 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-xs font-bold transition-all flex items-center gap-2">
-                                    {new Date(date + 'T12:00:00').toLocaleDateString('es', { day: 'numeric', month: 'short' })}
-                                    <ArrowRight size={14} />
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-                </div>
-            )}
 
             {/* ── KPI Cards ── */}
             <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
