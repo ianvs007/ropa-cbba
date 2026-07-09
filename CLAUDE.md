@@ -88,6 +88,26 @@ zip **`ropa-cbba-v3-cierres-pendientes-20260708.zip`**:
    para el botón X (diálogo genérico del navegador — límite sin Electron);
    admin exento. Helper puro: `getExitWarning`.
 
+### ✅ En producción (main, zip v4 — 09/07/2026)
+
+Merges `03b5f98` + `bf493f6`, build `6ff1bf6`, zip
+**`ropa-cbba-v4-cliente-caja-20260709.zip`**:
+
+6. **Cliente opcional en la venta** (`07dd13d`..`2844624`, rama
+   `feature/cliente-en-venta`): botón "➕ Añadir cliente (opcional)" en el POS;
+   la venta guarda `clientName`/`clientPhone` como campos NO indexados (sin
+   migración — sigue schema v22, `undefined` cuando no hay cliente); el ticket
+   imprime "Cliente: ... Cel: ..." bajo el vendedor; el historial muestra el
+   cliente en el detalle y lo incluye al reimprimir. 100% opcional: vacío =
+   comportamiento idéntico al anterior.
+7. **Limpieza y claridad del cierre de caja** (`4f317ad`..`5afdc66`, rama
+   `feature/limpieza-cierre-caja`, solo CashClose.jsx, sin cambios de lógica):
+   sin badge V-FINAL ni comentarios de debug; pill y confirm "✏️ CORREGIR"
+   (edición de arqueo) diferenciados de "Reabrir Caja" (reabrir turno); pasos
+   del indicador ARQUEO → COMPLETADO; eliminado el botón "Ver Siguiente Día"
+   (`handleNewDate` podía caer en fecha futura bloqueada); formulario de arqueo
+   deduplicado en el subcomponente `ArqueoFisicoCard` (prop `showEditPill`).
+
 ### 🔜 Posibles siguientes pasos (no comprometidos)
 
 - Vista admin de cierres retroactivos / abrir `/cash` a admins.
