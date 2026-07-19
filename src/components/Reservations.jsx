@@ -12,6 +12,7 @@ import { useNotification } from '../hooks/useNotification';
 import { useAvailableStock } from '../hooks/useAvailableStock';
 import { formatCurrency, drawPDFHeader } from '../utils';
 import { splitProportional } from '../utils/reservationSplit';
+import { groupReservations, summarizeGroup } from '../utils/reservationGroups';
 import useCashRegister from '../hooks/useCashRegister';
 import { useUser } from '../contexts/UserContext';
 
@@ -20,6 +21,7 @@ const STATUS_LABEL = {
     pending: { text: 'En Proceso', cls: 'badge-blue' },
     completed: { text: 'Completada', cls: 'badge-green' },
     cancelled: { text: 'Cancelada', cls: 'badge-red' },
+    mixed: { text: 'Mixta', cls: 'badge-blue' },
 };
 
 function ProgressBar({ paid, total }) {
@@ -64,6 +66,7 @@ export default function Reservations() {
     const [tab, setTab] = React.useState('active');   // active | history
     const [showNew, setShowNew] = React.useState(false);
     const [detail, setDetail] = React.useState(null);       // reserva abierta en panel
+    const [openGroup, setOpenGroup] = React.useState(null); // grupo abierto en panel (cliente+fecha)
     const { msg, showMsg } = useNotification();
     const [confirm, setConfirm] = React.useState(null);       // { type, reservaId }
     const [abonoAmt, setAbonoAmt] = React.useState('');
@@ -245,31 +248,34 @@ export default function Reservations() {
         return m;
     }, [products]);
 
-    // ── Mapa groupId → cantidad de prendas del grupo (reservas agrupadas) ──
-    // Las reservas antiguas sin groupId no entran aquí y se muestran como siempre
-    const groupCounts = React.useMemo(() => {
-        const m = {};
-        (reservations || []).forEach(r => { if (r.groupId) m[r.groupId] = (m[r.groupId] || 0) + 1; });
-        return m;
-    }, [reservations]);
-
-    // ── Filtros de lista ──
-    const filtered = React.useMemo(() => {
+    // ── Grupos de reservas: mismo cliente + misma fecha → una sola tarjeta ──
+    // TODAS las reservas son visibles para vendedores y admin (sin filtro por vendedor).
+    const groups = React.useMemo(() => {
         if (!reservations) return [];
-        return reservations.filter(r => {
-            if (user?.role !== 'admin' && r.sellerName !== (user?.name || user?.username)) return false;
-            if (tab === 'active' && r.status !== 'pending') return false;
-            if (tab === 'history' && r.status === 'pending') return false;
-            const q = search.toLowerCase();
-            if (q && !r.clientName?.toLowerCase().includes(q) &&
-                !r.clientPhone?.includes(q) &&
-                !r.productName?.toLowerCase().includes(q) &&
-                !(r.productShortCode || '').toLowerCase().includes(q) &&
-                !(r.productBarcode || '').toLowerCase().includes(q) &&
-                !(productShortCodeMap[r.productId] || '').includes(search)) return false;
-            return true;
+        const byTab = reservations.filter(r =>
+            tab === 'active' ? r.status === 'pending' : r.status !== 'pending');
+        const grouped = groupReservations(byTab);
+        const q = search.trim().toLowerCase();
+        if (!q) return grouped;
+        return grouped.filter(g => {
+            if (g.clientName.toLowerCase().includes(q)) return true;
+            if ((g.clientPhone || '').includes(search.trim())) return true;
+            return g.items.some(r =>
+                r.productName?.toLowerCase().includes(q) ||
+                (r.productShortCode || '').toLowerCase().includes(q) ||
+                (r.productBarcode || '').toLowerCase().includes(q) ||
+                (productShortCodeMap[r.productId] || '').includes(search.trim()));
         });
     }, [reservations, tab, search, productShortCodeMap]);
+
+    // Contador de la pestaña "En Proceso": grupos activos (coincide con las tarjetas)
+    const activeGroupCount = React.useMemo(() =>
+        groupReservations((reservations || []).filter(r => r.status === 'pending')).length,
+    [reservations]);
+
+    // Grupo abierto, re-derivado de `groups` para tener datos FRESCOS tras cada
+    // cambio en BD (abono/entrega/cancelación cierra el detalle y vuelve al grupo)
+    const liveGroup = openGroup ? groups.find(g => g.key === openGroup.key) || null : null;
 
     // ════════════════════════════════════════════════════════
     // ACCIONES
@@ -881,12 +887,169 @@ No se pueden alterar registros de días cerrados.`);
         window.open(pdfUrl, '_blank');
     };
 
+    /**
+     * Imprime comprobante PDF CONSOLIDADO del grupo (mismo cliente + misma fecha):
+     * una sola nota con todas las prendas y el historial de pagos del grupo.
+     */
+    const printGroupVoucher = (group, summary) => {
+        const curr = currency;
+        const ticketMsg = settings?.find(s => s.key === 'ticketMessage')?.value || '¡Gracias por su compra!';
+
+        // ── Mismo formato que el comprobante individual: Media Carta Horizontal ──
+        const doc = new jsPDF({ orientation: 'l', unit: 'mm', format: [215.9, 139.7] });
+        const pageWidth = 215.9;
+        const pageHeight = 139.7;
+        const marginX = 15;
+        const center = pageWidth / 2;
+        const right = pageWidth - marginX;
+        let y = 10;
+
+        // Salto de página simple cuando el contenido supera el alto útil
+        const ensure = (needed) => {
+            if (y + needed > pageHeight - 10) { doc.addPage(); y = 12; }
+        };
+
+        // ── Encabezado ──
+        y = drawPDFHeader(doc, settings, 'NOTA DE RESERVA', y);
+        y += 4;
+
+        // ── Datos del cliente ──
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'bold');
+        doc.text('CLIENTE:', marginX, y);
+        doc.setFont('helvetica', 'normal');
+        const telStr = group.clientPhone ? `  |  Tel: ${group.clientPhone}` : '';
+        doc.text(`${group.clientName}${telStr}`, marginX + 17, y); y += 4;
+
+        doc.setFont('helvetica', 'bold');
+        doc.text('Reservas #:', marginX, y);
+        doc.setFont('helvetica', 'normal');
+        doc.text(group.items.map(r => r.id).join(', '), marginX + 20, y);
+        doc.text(`Fecha: ${new Date(group.items[0].createdAt).toLocaleDateString()}`, right, y, { align: 'right' }); y += 3;
+
+        doc.line(marginX, y, right, y); y += 4;
+
+        // ── Prendas del grupo ──
+        doc.setFont('helvetica', 'bold');
+        doc.text(`PRENDAS (${group.items.length}):`, marginX, y); y += 4;
+
+        group.items.forEach((r, i) => {
+            doc.setFont('helvetica', 'normal');
+            let pdDetails = '';
+            if (r.productSize || r.productColor) {
+                pdDetails = ` (${[r.productSize && `Talla: ${r.productSize}`, r.productColor && `Color: ${r.productColor}`].filter(Boolean).join(' | ')})`;
+            }
+            const splitName = doc.splitTextToSize(`${i + 1}. ${r.productName || ''}${pdDetails}`, 150);
+            ensure(splitName.length * 3.5 + 8);
+            doc.text(splitName, marginX + 4, y);
+            doc.setFont('helvetica', 'bold');
+            doc.text(formatCurrency(r.totalPrice || 0, curr), right, y, { align: 'right' });
+            y += splitName.length * 3.5;
+
+            doc.setFont('helvetica', 'normal');
+            if (r.originalPrice && r.originalPrice > (r.totalPrice || 0)) {
+                doc.setFontSize(8);
+                doc.text(`P. Original: ${formatCurrency(r.originalPrice, curr)}  (Desc: -${formatCurrency(r.originalPrice - (r.totalPrice || 0), curr)})`, marginX + 8, y);
+                doc.setFontSize(9);
+                y += 3.5;
+            }
+            if (r.productShortCode) {
+                doc.text(`Cód. Ref: ${r.productShortCode}`, marginX + 8, y);
+                y += 3.5;
+            }
+            y += 0.5;
+        });
+
+        ensure(6);
+        doc.line(marginX, y, right, y); y += 4;
+
+        // ── Historial de pagos consolidado ──
+        doc.setFont('helvetica', 'bold');
+        doc.text('PAGOS REALIZADOS:', marginX, y); y += 4;
+
+        doc.setFont('helvetica', 'normal');
+        if (summary.pays.length === 0) {
+            doc.text('Ningún abono registrado', marginX, y); y += 4;
+        } else {
+            summary.pays.forEach(p => {
+                ensure(4);
+                const r = group.items.find(it => it.id === p.reservationId);
+                const fecha = new Date(p.date).toLocaleDateString();
+                const methodLabel = p.paymentMethod === 'qr' ? '(QR)' : '(Efectivo)';
+                const prenda = (r?.productName || '').slice(0, 30);
+                doc.text(`${fecha}  ${prenda} ${methodLabel}`, marginX, y);
+                doc.text(`+${formatCurrency(p.amount || 0, curr)}`, right, y, { align: 'right' });
+                y += 4;
+            });
+        }
+        y -= 1;
+        ensure(6);
+        doc.line(marginX, y, right, y); y += 4;
+
+        // ── Resumen financiero del grupo ──
+        doc.setFont('helvetica', 'bold');
+        ensure(5);
+        doc.text('Total del grupo:', marginX, y);
+        doc.text(formatCurrency(summary.total, curr), right, y, { align: 'right' }); y += 5;
+        ensure(5);
+        doc.text('Total abonado:', marginX, y);
+        doc.text(formatCurrency(summary.paid, curr), right, y, { align: 'right' }); y += 5;
+
+        if (summary.status === 'completed') {
+            ensure(6);
+            doc.setFontSize(10);
+            doc.text('>>> PRENDAS ENTREGADAS <<<', center, y, { align: 'center' });
+            doc.setFontSize(9);
+            y += 6;
+        } else if (summary.status !== 'cancelled') {
+            ensure(5);
+            doc.text('SALDO PENDIENTE:', marginX, y);
+            doc.text(formatCurrency(summary.remaining, curr), right, y, { align: 'right' }); y += 5;
+        }
+
+        ensure(6);
+        doc.line(marginX, y, right, y); y += 4;
+
+        // ── Pie ──
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        ensure(4);
+        doc.text(`Emitido: ${new Date().toLocaleString()}`, center, y, { align: 'center' }); y += 4;
+
+        // Mensaje de vigencia (el guardado en la primera prenda, o el de configuración)
+        const expiryMsg = group.items[0]?.expiryMessage || defExpiryMsg;
+        if (expiryMsg) {
+            const splitExp = doc.splitTextToSize(expiryMsg, pageWidth - marginX * 2);
+            ensure(splitExp.length * 3.5 + 2);
+            doc.setFont('helvetica', 'italic');
+            doc.text(splitExp, center, y, { align: 'center' });
+            y += (splitExp.length * 3.5) + 2;
+        }
+
+        if (ticketMsg) {
+            ensure(4);
+            doc.setFont('helvetica', 'bold');
+            doc.text(ticketMsg, center, y, { align: 'center' }); y += 4;
+        }
+
+        ensure(8);
+        doc.setFont('helvetica', 'normal');
+        const sellers = [...new Set(group.items.map(r => r.sellerName).filter(Boolean))];
+        if (sellers.length > 0) { doc.text(`Atendido por: ${sellers.join(', ')}`, center, y, { align: 'center' }); y += 3; }
+        doc.text('Conserve este comprobante.', center, y, { align: 'center' });
+
+        doc.autoPrint();
+        const pdfBlob = doc.output('blob');
+        const pdfUrl = URL.createObjectURL(pdfBlob);
+        window.open(pdfUrl, '_blank');
+    };
+
     // ════════════════════════════════════════════════════════
     // RENDER
     // ════════════════════════════════════════════════════════
     return (
         <div className="max-w-7xl mx-auto fade-in">
-            {!detail && !showNew && (
+            {!detail && !showNew && !liveGroup && (
                 <>
             {/* ── Header ── */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
@@ -924,7 +1087,7 @@ No se pueden alterar registros de días cerrados.`);
                             {lbl}
                             {val === 'active' && (
                                 <span className="ml-2 bg-pink-600 text-white text-xs rounded-full px-1.5 py-0.5">
-                                    {(reservations || []).filter(r => r.status === 'pending').length}
+                                    {activeGroupCount}
                                 </span>
                             )}
                         </button>
@@ -943,15 +1106,15 @@ No se pueden alterar registros de días cerrados.`);
                 <div className="space-y-3">
 
                     {/* 💡 Instrucción para la cajera */}
-                    {tab === 'active' && filtered.length > 0 && !detail && (
+                    {tab === 'active' && groups.length > 0 && !detail && (
                         <div className="bg-blue-50 border border-blue-200 rounded-2xl px-5 py-4
                                         flex items-center gap-3 text-sm text-blue-700 font-semibold shadow-sm">
                             <AlertCircle size={20} className="text-blue-500" />
-                            Selecciona una reserva para gestionar abonos, facturación y entrega
+                            Selecciona una reserva o grupo para gestionar abonos, facturación y entrega
                         </div>
                     )}
 
-                    {filtered.length === 0 ? (
+                    {groups.length === 0 ? (
                         <div className="fashion-card py-20 text-center text-pink-300">
                             <Tag size={48} className="mx-auto mb-4 opacity-30" />
                             <p className="text-lg font-bold">
@@ -961,11 +1124,14 @@ No se pueden alterar registros de días cerrados.`);
                         </div>
                     ) : (
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                            {filtered.map(r => {
+                            {groups.map(g => {
+                                // ── Grupo de una sola prenda → tarjeta individual (como siempre) ──
+                                if (g.items.length === 1) {
+                                const r = g.items[0];
                                 const { paid, remaining } = getReservationData(r);
                                 const st = STATUS_LABEL[r.status] || STATUS_LABEL.pending;
                                 return (
-                                    <button key={r.id}
+                                    <button key={g.key}
                                         onClick={() => { 
                                             setDetail(r); 
                                             setAbonoAmt(''); 
@@ -978,11 +1144,6 @@ No se pueden alterar registros de días cerrados.`);
                                             <div className="min-w-0">
                                                 <h3 className="font-black text-pink-900 text-lg leading-tight truncate uppercase tracking-tight">{r.clientName}</h3>
                                                 <p className="text-[10px] font-black text-pink-300 uppercase tracking-widest mt-1">RESERVA #{r.id}</p>
-                                                {r.groupId && groupCounts[r.groupId] > 1 && (
-                                                    <span className="inline-flex items-center gap-1 mt-1.5 text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-lg bg-purple-100 text-purple-700 border border-purple-200">
-                                                        <Package size={10} strokeWidth={2.5} /> Grupo de {groupCounts[r.groupId]} prendas
-                                                    </span>
-                                                )}
                                             </div>
                                             <span className={`shrink-0 ml-2 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-xl shadow-sm
                                                 ${st.cls === 'badge-blue' ? 'bg-blue-600 text-white' : ''}
@@ -1032,6 +1193,73 @@ No se pueden alterar registros de días cerrados.`);
                                         </div>
                                     </button>
                                 );
+                                }
+
+                                // ── Grupo de varias prendas (mismo cliente + misma fecha) ──
+                                const summary = summarizeGroup(g.items, payments);
+                                const st = STATUS_LABEL[summary.status] || STATUS_LABEL.pending;
+                                return (
+                                    <button key={g.key}
+                                        onClick={() => setOpenGroup(g)}
+                                        className="fashion-card w-full text-left p-6 transition-all hover:shadow-xl hover:-translate-y-1 group border-2 border-purple-200 hover:border-purple-400">
+
+                                        <div className="flex items-start justify-between mb-4">
+                                            <div className="min-w-0">
+                                                <h3 className="font-black text-pink-900 text-lg leading-tight truncate uppercase tracking-tight">{g.clientName}</h3>
+                                                <p className="text-[10px] font-black text-pink-300 uppercase tracking-widest mt-1">
+                                                    {new Date(g.items[0].createdAt).toLocaleDateString()}
+                                                </p>
+                                                <span className="inline-flex items-center gap-1 mt-1.5 text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-lg bg-purple-100 text-purple-700 border border-purple-200">
+                                                    <Package size={10} strokeWidth={2.5} /> Grupo de {g.items.length} prendas
+                                                </span>
+                                            </div>
+                                            <span className={`shrink-0 ml-2 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-xl shadow-sm
+                                                ${st.cls === 'badge-blue' ? 'bg-blue-600 text-white' : ''}
+                                                ${st.cls === 'badge-green' ? 'bg-green-600 text-white' : ''}
+                                                ${st.cls === 'badge-red' ? 'bg-red-600 text-white' : ''}`}>
+                                                {st.text}
+                                            </span>
+                                        </div>
+
+                                        <div className="mb-4 space-y-1">
+                                            {g.items.slice(0, 3).map(r => (
+                                                <p key={r.id} className="text-sm font-bold text-pink-800 line-clamp-1 uppercase">{r.productName}</p>
+                                            ))}
+                                            {g.items.length > 3 && (
+                                                <p className="text-[11px] font-black text-pink-400 uppercase tracking-wide">+{g.items.length - 3} prenda(s) más…</p>
+                                            )}
+                                        </div>
+
+                                        <div className="space-y-2 mb-4">
+                                            <ProgressBar paid={summary.paid} total={summary.total} />
+                                            <div className="flex justify-between text-xs font-black">
+                                                <span className="text-green-600 uppercase">Abonado: {formatCurrency(summary.paid, currency)}</span>
+                                                <span className="text-pink-900 uppercase">Total: {formatCurrency(summary.total, currency)}</span>
+                                            </div>
+                                        </div>
+
+                                        {summary.status === 'pending' && (
+                                            <div className="bg-orange-50 p-2.5 rounded-xl border border-orange-100 mb-4">
+                                                <p className="text-[10px] text-orange-400 font-black uppercase tracking-widest">Saldo Restante</p>
+                                                <p className="text-lg font-black text-orange-600 font-mono leading-none mt-1">
+                                                    {formatCurrency(summary.remaining, currency)}
+                                                </p>
+                                            </div>
+                                        )}
+
+                                        <div className="flex justify-between items-center pt-4 border-t border-pink-50">
+                                            <p className="text-[10px] font-black text-purple-400 uppercase flex items-center gap-1">
+                                                <Eye size={12} strokeWidth={2.5} /> Ver grupo
+                                            </p>
+                                            {summary.earliestExpiry && (
+                                                <div className={`text-[10px] font-black flex items-center gap-1.5 uppercase transition-colors
+                                                    ${new Date(summary.earliestExpiry) < new Date() ? 'text-red-500' : 'text-orange-500 group-hover:text-pink-600'}`}>
+                                                    <Clock size={12} strokeWidth={2.5} /> Vence: {new Date(summary.earliestExpiry).toLocaleDateString()}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </button>
+                                );
                             })}
                         </div>
                     )}
@@ -1039,6 +1267,141 @@ No se pueden alterar registros de días cerrados.`);
             </div>
             </>
             )}
+
+            {/* ════ VISTA DETALLE DE GRUPO (mismo cliente + misma fecha) ════ */}
+            {liveGroup && !detail && (() => {
+                const summary = summarizeGroup(liveGroup.items, payments);
+                const pct = Math.min(100, summary.total > 0 ? (summary.paid / summary.total) * 100 : 0);
+                const st = STATUS_LABEL[summary.status] || STATUS_LABEL.pending;
+                const paysOf = (id) => summary.pays.filter(p => p.reservationId === id);
+                return (
+                    <div className="fade-in bg-white rounded-3xl shadow-xl border border-pink-100 mb-12">
+                        <div className="p-6 md:p-8 max-w-4xl mx-auto">
+                            {/* Header */}
+                            <div className="flex items-center justify-between mb-8">
+                                <div className="flex items-center gap-4">
+                                    <div className="p-3 bg-purple-100 rounded-2xl text-purple-600">
+                                        <Package size={24} strokeWidth={2.5} />
+                                    </div>
+                                    <div>
+                                        <h2 className="text-2xl font-black text-pink-900 uppercase tracking-tight">{liveGroup.clientName}</h2>
+                                        <p className="text-pink-400 font-bold text-sm tracking-widest">
+                                            GRUPO DE {liveGroup.items.length} PRENDAS · {new Date(liveGroup.items[0].createdAt).toLocaleDateString()}
+                                        </p>
+                                    </div>
+                                </div>
+                                <button onClick={() => setOpenGroup(null)}
+                                    className="w-12 h-12 bg-pink-50 text-pink-400 rounded-2xl flex items-center justify-center">
+                                    <X size={24} />
+                                </button>
+                            </div>
+
+                            {/* Resumen del grupo */}
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                                <div className="fashion-card p-6 bg-pink-50/50">
+                                    <p className="text-[10px] font-black text-pink-300 uppercase tracking-widest mb-3">Contacto</p>
+                                    <p className="font-bold text-pink-900 flex items-center gap-2"><Phone size={14} /> {liveGroup.clientPhone || 'Sin teléfono'}</p>
+                                    <p className="text-xs text-pink-400 mt-1 italic">Creada: {new Date(liveGroup.items[0].createdAt).toLocaleDateString()}</p>
+                                </div>
+                                <div className="fashion-card p-6 bg-green-50/60 border border-green-100">
+                                    <p className="text-[10px] font-black text-green-400 uppercase tracking-widest mb-3">Total Abonado</p>
+                                    <p className="text-3xl font-black text-green-700">{formatCurrency(summary.paid, currency)}</p>
+                                    <p className="text-[10px] text-green-500 font-bold mt-1 uppercase">{summary.pays.length} abonos</p>
+                                </div>
+                                <div className="fashion-card p-6 bg-pink-900 text-white">
+                                    <p className="text-[10px] font-black text-pink-400 uppercase tracking-widest mb-3">Total del Grupo</p>
+                                    <p className="text-3xl font-black">{formatCurrency(summary.total, currency)}</p>
+                                    {summary.status === 'pending' && (
+                                        <p className="text-[10px] text-orange-300 font-bold mt-1 uppercase">Saldo: {formatCurrency(summary.remaining, currency)}</p>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Progreso grupal */}
+                            <div className="fashion-card p-6 mb-8">
+                                <div className="flex justify-between items-center mb-4">
+                                    <div>
+                                        <p className="text-[10px] font-black text-pink-300 uppercase tracking-widest mb-1">Estado del Pago Grupal</p>
+                                        <h3 className="text-2xl font-black text-pink-900">{pct.toFixed(0)}% COMPLETADO</h3>
+                                    </div>
+                                    <span className={`text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-xl shadow-sm
+                                        ${st.cls === 'badge-blue' ? 'bg-blue-600 text-white' : ''}
+                                        ${st.cls === 'badge-green' ? 'bg-green-600 text-white' : ''}
+                                        ${st.cls === 'badge-red' ? 'bg-red-600 text-white' : ''}`}>
+                                        {st.text}
+                                    </span>
+                                </div>
+                                <ProgressBar paid={summary.paid} total={summary.total} />
+                            </div>
+
+                            {/* Prendas del grupo */}
+                            <h3 className="font-black text-pink-900 uppercase tracking-widest text-sm mb-4 flex items-center gap-2">
+                                <Tag size={16} className="text-pink-400" /> Prendas del grupo — toca una para gestionar abonos y entrega
+                            </h3>
+                            <div className="space-y-3 mb-4">
+                                {liveGroup.items.map(r => {
+                                    const pPays = paysOf(r.id);
+                                    const pPaid = Math.round(pPays.reduce((s, p) => s + (p.amount || 0), 0) * 100) / 100;
+                                    const pRemaining = Math.round(Math.max(0, (r.totalPrice || 0) - pPaid) * 100) / 100;
+                                    const rst = STATUS_LABEL[r.status] || STATUS_LABEL.pending;
+                                    return (
+                                        <button key={r.id}
+                                            onClick={() => {
+                                                setDetail(r);
+                                                setAbonoAmt('');
+                                                setAbonoPayment('efectivo');
+                                                setAbonoNote('');
+                                            }}
+                                            className="w-full text-left bg-white p-5 rounded-2xl border-2 border-pink-100 hover:border-pink-300 hover:shadow-md transition-all flex flex-col sm:flex-row sm:items-center gap-4">
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex items-center gap-2 flex-wrap mb-1">
+                                                    <p className="font-black text-pink-900 uppercase truncate">{r.productName}</p>
+                                                    <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-lg
+                                                        ${rst.cls === 'badge-blue' ? 'bg-blue-600 text-white' : ''}
+                                                        ${rst.cls === 'badge-green' ? 'bg-green-600 text-white' : ''}
+                                                        ${rst.cls === 'badge-red' ? 'bg-red-600 text-white' : ''}`}>
+                                                        {rst.text}
+                                                    </span>
+                                                </div>
+                                                <p className="text-[11px] font-bold text-pink-400 uppercase">
+                                                    Reserva #{r.id}
+                                                    {r.productSize && ` · Talla: ${r.productSize}`}
+                                                    {r.productColor && ` · Color: ${r.productColor}`}
+                                                    {r.productShortCode && ` · Cód: ${r.productShortCode}`}
+                                                </p>
+                                                {r.status === 'pending' && (
+                                                    <div className="mt-2 max-w-xs">
+                                                        <ProgressBar paid={pPaid} total={r.totalPrice} />
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <div className="text-right shrink-0">
+                                                <p className="text-lg font-black text-pink-900">{formatCurrency(r.totalPrice, currency)}</p>
+                                                <p className="text-[11px] font-black text-green-600 uppercase">Abonado: {formatCurrency(pPaid, currency)}</p>
+                                                {r.status === 'pending' && pRemaining > 0 && (
+                                                    <p className="text-[11px] font-black text-orange-500 uppercase">Saldo: {formatCurrency(pRemaining, currency)}</p>
+                                                )}
+                                            </div>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+
+                            {/* Footer acciones */}
+                            <div className="mt-8 pt-8 border-t-2 border-pink-50 flex flex-col md:flex-row gap-4">
+                                <button onClick={() => setOpenGroup(null)}
+                                    className="px-8 py-5 border-2 border-pink-100 text-pink-400 font-black rounded-3xl text-xs uppercase tracking-widest hover:bg-pink-50 transition-colors w-full md:w-auto">
+                                    Volver a Reservas
+                                </button>
+                                <button onClick={() => printGroupVoucher(liveGroup, summary)}
+                                    className="flex-1 bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-black py-5 rounded-3xl text-sm shadow-md hover:shadow-lg uppercase tracking-widest flex items-center justify-center gap-2">
+                                    <Printer size={18} /> Imprimir Comprobante Grupal
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
 
             {/* ════ VISTA DETALLE Y ABONOS (PANTALLA COMPLETA) ════ */}
             {detail && (() => {
@@ -1181,7 +1544,7 @@ No se pueden alterar registros de días cerrados.`);
 
                         {/* Footer Acciones Estático */}
                         <div className="mt-8 pt-8 border-t-2 border-pink-50 flex flex-col md:flex-row gap-4">
-                            <button onClick={() => setDetail(null)} className="px-8 py-5 border-2 border-pink-100 text-pink-400 font-black rounded-3xl text-xs uppercase tracking-widest hover:bg-pink-50 transition-colors w-full md:w-auto">Volver a Reservas</button>
+                            <button onClick={() => setDetail(null)} className="px-8 py-5 border-2 border-pink-100 text-pink-400 font-black rounded-3xl text-xs uppercase tracking-widest hover:bg-pink-50 transition-colors w-full md:w-auto">{liveGroup ? 'Volver al Grupo' : 'Volver a Reservas'}</button>
                             
                             <button onClick={() => printReservationVoucher(detail, pays, paid, remaining)}
                                 className="flex-1 bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-black py-5 rounded-3xl text-sm shadow-md hover:shadow-lg uppercase tracking-widest flex items-center justify-center gap-2">

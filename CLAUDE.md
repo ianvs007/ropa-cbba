@@ -49,6 +49,10 @@ tiene su propia base de datos local (sin servidor, sin sincronización).
   `reservations` por prenda con `groupId` compartido (campo NO indexado, sin
   migración de schema). Abono único repartido proporcionalmente al centavo
   (`splitProportional`). Entrega/anulación/abonos siguen por prenda individual.
+  La LISTA, el DETALLE y la IMPRESIÓN se agrupan por cliente + fecha
+  (`reservationGroups.js`: una tarjeta por grupo, vista grupal con comprobante
+  consolidado); las reservas son visibles para TODOS los vendedores y admin
+  (sin filtro por vendedor — la trazabilidad va en `registeredBy` de cada pago).
 
 ## Registro de actualizaciones — Julio 2026
 
