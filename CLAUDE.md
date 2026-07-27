@@ -3,7 +3,8 @@
 POS **offline** para tienda de ropa en Cochabamba: React 19 + Vite + Dexie.js
 (IndexedDB, schema **v22**) + Tailwind. Corre en 3 máquinas de producción como
 ventana de navegador lanzada por `iniciar-servicio-silencioso.bat`; cada máquina
-tiene su propia base de datos local (sin servidor, sin sincronización).
+tiene su propia base de datos local (sin servidor). Desde el 27/07/2026 existe
+sincronización manual vía Excel con la tienda virtual (pantalla `/sync`).
 
 ## Convenciones de trabajo
 
@@ -20,7 +21,7 @@ tiene su propia base de datos local (sin servidor, sin sincronización).
   se copia a mano a las 3 máquinas (no hacen git pull).
 - **Tests**: `npx vitest run` (entorno node, funciones puras — la lógica testeable
   se extrae a `src/utils/` o se exporta del hook). Toda la suite en verde +
-  `npm run build` antes de commitear. **157 tests** al 2026-07-08.
+  `npm run build` antes de commitear. **184 tests** al 2026-07-27.
 - **ESLint**: hay falsos positivos preexistentes (`Icon` en Layout/CashClose,
   vars sin usar); no arreglarlos de pasada — verificar con stash que no se
   agregan problemas nuevos.
@@ -124,6 +125,29 @@ build final `556177b`, zip **`ropa-cbba-v4-cliente-caja-20260709.zip`**
 9. **Menú del vendedor renombrado** "Cierre de Caja" → "Abrir/Cerrar Caja"
    (`31a70e4`); el badge de pendientes del menú ahora se ancla a la ruta
    `/cash` (no al texto del label) para sobrevivir futuros renames.
+
+### 🔧 Sin commitear (27/07/2026): Sincronización con la tienda virtual
+
+10. **Sync de stock por Excel con la tienda virtual** — pantalla `/sync` (solo
+    admin, entrada "Sincronización" en `NAV_ADMIN`), lado POS del ritual diario
+    de cierre de caja con la tienda web (`tienda virtual - compra de ropa`):
+    - **Exportar stock**: Excel `stock-para-tienda-virtual-YYYY-MM-DD.xlsx` con
+      columnas `codigo|nombre|talla|color|stock` (codigo = `shortCode`), una
+      fila por producto activo; se sube en el admin web → Sincronizar.
+    - **Importar ventas en línea**: lee el Excel `ventas-en-linea-*.xlsx` que
+      genera la nube, vista previa con cruce por `shortCode` y avisos
+      (no encontrado / stock insuficiente / ya importada), y al confirmar
+      aplica en UNA transacción Dexie: descuenta `product.stock`, marca unidades
+      `barcodes.used` (FIFO), kardex `salida` con nota `VENTA EN LÍNEA #ref`.
+      **No crea registros en `sales` ni toca caja** (decisión del dueño: el
+      dinero de la web va al banco por QR, no a la caja física).
+    - Guard contra doble importación: `settings.ultimaImportacionVentas`.
+    - Archivos: `src/components/Sync.jsx`, `src/utils/syncExcel.js` (lógica
+      pura), `src/__tests__/syncExcel.test.js` (13 tests), rutas en `App.jsx`,
+      menú en `Layout.jsx`. 184 tests en verde + build OK.
+    - ⚠️ OPERATIVO: el ritual se hace SOLO en la máquina principal (central) —
+      decidido por Alain el 27/07/2026; las demás máquinas no sincronizan
+      (cada una tiene su propia BD local).
 
 ### 🔜 Posibles siguientes pasos (no comprometidos)
 
