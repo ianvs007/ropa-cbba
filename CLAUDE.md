@@ -148,6 +148,10 @@ build final `556177b`, zip **`ropa-cbba-v4-cliente-caja-20260709.zip`**
     - ⚠️ OPERATIVO: el ritual se hace SOLO en la máquina principal (central) —
       decidido por Alain el 27/07/2026; las demás máquinas no sincronizan
       (cada una tiene su propia BD local).
+    - Ampliación 27/07/2026 (v6): la exportación de stock incluye la columna
+      `precio` para alimentar la importación inicial de catálogo en la nube
+      (tarjeta ④ del admin web: crea las prendas que no existen, sin foto ni
+      categoría, editables después). 185 tests en verde.
 
 ### 🔜 Posibles siguientes pasos (no comprometidos)
 
