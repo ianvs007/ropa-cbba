@@ -1,26 +1,39 @@
 # 📋 Seguimiento de Tareas - Tienda de Ropa
 
 ## 🚦 Estado Actual
-- **Base de Datos:** Dexie.js v10 implementada con esquemas para productos, ventas, gastos, reservas y códigos de barras.
-- **Frontend:** React 19 + Tailwind CSS. Componente `ProductList` robusto con gestión de stock atómicao y validaciones.
-- **Pendiente según ADN:** Refactorización de archivos que superan las 400 líneas (`db.js` y `ProductList.jsx`).
+- **Base de Datos:** Dexie.js con esquema v22 (22 migraciones). Capa de datos modularizada en `src/db/` (`schema.js`, `helpers.js`, `seed.js`, `audit.js`).
+- **Frontend:** React 19 + Tailwind CSS. POS ya dividido en `components/pos/` (CartPanel, ProductSearch, PaymentPanel). ProductList y POS ya refactorizados.
+- **Tests:** 171 tests en verde (`src/__tests__/`) cubriendo lógica crítica: cierres retroactivos, cripto, validaciones, permisos, anti-manipulación de fecha, abonos, integridad referencial.
+- **Seguridad:** PBKDF2-SHA256 (100k iteraciones), permisos granulares, logout por inactividad, detección de manipulación de reloj, auditoría de cierres.
+- **Estado general:** Sistema maduro y en producción. La deuda restante es de mantenimiento, no de funcionalidad.
 
-## 🛠 Tareas del Proyecto
+## ✅ Completado desde la última revisión
+- [x] Dividir `src/db.js` → modularizado en `src/db/`.
+- [x] Dividir `src/components/POS.jsx` → modularizado en `src/components/pos/`.
+- [x] Dividir `src/components/ProductList.jsx` (620 → 312 líneas).
+- [x] Centralizar lógica de `reservedMap` → hook `useAvailableStock` creado.
+- [x] Implementar carpeta de tests → `src/__tests__/` con 171 tests.
 
-### 1. Refactorización y Limpieza (Prioridad Alta)
-- [ ] Dividir `src/db.js` (Actual: 539 líneas). Extraer esquemas y semillas.
-- [ ] Dividir `src/components/ProductList.jsx` (Actual: 620 líneas). Modularizar UI y lógica.
-- [ ] Dividir `src/components/POS.jsx` (Actual: 525 líneas).
-- [ ] Centralizar lógica de `reservedMap` (Principio DRY). Crear un hook `useAvailableStock`.
-- [ ] Implementar carpeta `/tests` para validaciones críticas de stock y ventas.
+## 🛠 Tareas Pendientes
 
-### 2. Mejoras de Seguridad (El Centinela)
-- [ ] Revisar validaciones de entrada en formularios para prevenir XSS.
-- [ ] Asegurar que el borrado de datos (reset) sea protegido por contraseña de admin.
+### 1. Refactorización (Prioridad Alta)
+- [ ] Dividir `src/components/Reservations.jsx` (1.867 líneas — el módulo más grande). Extraer lógica de grupos/abonos, UI y generación de PDF.
+- [ ] Dividir `src/components/CashClose.jsx` (982 líneas).
 
-### 3. Experiencia de Usuario (El Estetea)
-- [ ] Revisar el enfoque *Mobile First* en el catálogo.
-- [ ] Añadir micro-animaciones en las transiciones de formularios.
+### 2. Funcionalidad (Prioridad Media)
+- [ ] Resolver la dependencia `xlsx`: está instalada pero no se importa en ningún archivo. Implementar la exportación a Excel o eliminar la dependencia.
+- [ ] Eliminar o reintegrar `src/components/DataIntegrity.jsx`: su ruta (`/data-integrity`) siempre redirige; la lógica vive en `CashClose.jsx`.
+- [ ] Añadir tests de componentes React (actualmente solo hay tests de lógica pura).
+
+### 3. Seguridad (Prioridad Media)
+- [ ] Proteger el borrado/reset de datos con contraseña de admin (hoy solo tiene doble confirmación en `Backup.jsx`).
+- [ ] Cambiar credenciales por defecto débiles del seed (`admin123` / `cajera123`).
+- [ ] Revisar validaciones de entrada en formularios para prevenir XSS (React escapa por defecto; `Barcode.jsx` ya sanitiza con `escapeHtml` — extender ese criterio donde se genere HTML manual).
+
+### 4. Mantenimiento (Prioridad Baja)
+- [ ] Versionar `package.json` (sigue en `0.0.0` pese a estar en producción).
+- [ ] Revisar enfoque *Mobile First* en el catálogo.
+- [ ] Añadir micro-animaciones en transiciones de formularios.
 
 ---
-*Última actualización: 2026-03-23*
+*Última actualización: 2026-07-27 (revisión completa contra el código real)*
