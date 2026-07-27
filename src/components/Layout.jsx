@@ -4,7 +4,7 @@ import {
     ShoppingBag, LayoutDashboard, ShoppingCart, ClipboardList,
     Package, Users, Settings, Database, LogOut, Menu, X,
     History, Boxes, DollarSign, Tag, ListTree, Receipt, Truck,
-    Calendar, AlertTriangle
+    Calendar, AlertTriangle, RefreshCw
 } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getLocalISOString } from '../db';
@@ -30,6 +30,7 @@ const NAV_ADMIN = [
     { label: 'Etiquetado Masivo', path: '/mass-labeling', icon: Tag, perm: PERMISSIONS.EDIT_PRODUCTS },
     { label: 'Inventario', path: '/inventory', icon: Boxes },
     { label: 'Movimientos', path: '/kardex', icon: History },
+    { label: 'Sincronización', path: '/sync', icon: RefreshCw },
     { label: 'Usuarios', path: '/users', icon: Users, perm: PERMISSIONS.MANAGE_USERS },
     { label: 'Gastos', path: '/expenses', icon: Receipt },
     { label: 'Configuración', path: '/settings', icon: Settings, perm: PERMISSIONS.SETTINGS },

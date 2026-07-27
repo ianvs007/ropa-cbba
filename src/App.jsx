@@ -17,6 +17,7 @@ import Expenses from './components/Expenses';
 import ProductList from './components/ProductList';
 import Inventory from './components/Inventory';
 import Kardex from './components/Kardex';
+import Sync from './components/Sync';
 
 // Reportes
 import Dashboard from './components/reports/Dashboard';
@@ -64,6 +65,7 @@ function AppRoutes() {
               <Route path="/mass-labeling" element={hasPermission(user, PERMISSIONS.EDIT_PRODUCTS) ? <MassLabeling /> : <Navigate to="/dashboard" replace />} />
               <Route path="/inventory" element={<Inventory />} />
               <Route path="/kardex" element={<Kardex />} />
+              <Route path="/sync" element={<Sync />} />
               <Route path="/users" element={hasPermission(user, PERMISSIONS.MANAGE_USERS) ? <Users /> : <Navigate to="/dashboard" replace />} />
               <Route path="/settings" element={hasPermission(user, PERMISSIONS.SETTINGS) ? <Settings /> : <Navigate to="/dashboard" replace />} />
               <Route path="/backup" element={hasPermission(user, PERMISSIONS.BACKUP) ? <Backup /> : <Navigate to="/dashboard" replace />} />
@@ -91,6 +93,7 @@ function AppRoutes() {
               <Route path="/mass-labeling" element={<Navigate to="/pos" replace />} />
               <Route path="/inventory" element={<Navigate to="/pos" replace />} />
               <Route path="/kardex" element={<Navigate to="/pos" replace />} />
+              <Route path="/sync" element={<Navigate to="/pos" replace />} />
               <Route path="/users" element={<Navigate to="/pos" replace />} />
               <Route path="/settings" element={<Navigate to="/pos" replace />} />
               <Route path="/backup" element={<Navigate to="/pos" replace />} />
