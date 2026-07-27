@@ -3,8 +3,8 @@
  *
  * Ritual diario al cierre de caja, en dos sentidos:
  *  1. EXPORTAR: el POS genera un Excel de stock (codigo | nombre | talla |
- *     color | stock) que se sube en el admin web → Sincronizar. El cruce en
- *     la nube es products.codigo = shortCode del POS + talla/color.
+ *     color | stock | precio) que se sube en el admin web → Sincronizar. El
+ *     cruce en la nube es products.codigo = shortCode del POS + talla/color.
  *  2. IMPORTAR: la nube devuelve un Excel de ventas en línea (codigo | nombre
  *     | talla | color | cantidad | precio_unit | estado | pedido | fecha) y el
  *     POS descuenta ese stock localmente (sin crear ventas en caja).
@@ -39,10 +39,10 @@ const ALIAS_COLUMNAS = {
 /**
  * Filas del Excel de stock a exportar a la tienda virtual.
  * Solo productos activos (active !== false) y con shortCode; el stock se
- * sanea a entero ≥ 0.
+ * sanea a entero ≥ 0 y el precio a número ≥ 0.
  *
  * @param {Array} products - Productos de la tabla `products`
- * @returns {{ filas: Array<{codigo, nombre, talla, color, stock}>, sinCodigo: Array }}
+ * @returns {{ filas: Array<{codigo, nombre, talla, color, stock, precio}>, sinCodigo: Array }}
  *          `sinCodigo` trae los productos activos omitidos por falta de
  *          shortCode, para advertir al usuario.
  */
@@ -57,12 +57,14 @@ export function filasStockParaExportar(products = []) {
             sinCodigo.push(p);
             continue;
         }
+        const precio = Number(p.price);
         filas.push({
             codigo,
             nombre: p.name ?? '',
             talla: p.size ?? '',
             color: p.color ?? '',
             stock: Math.max(0, Math.floor(Number(p.stock) || 0)),
+            precio: Number.isFinite(precio) && precio >= 0 ? precio : 0,
         });
     }
 

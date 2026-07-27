@@ -11,8 +11,8 @@ import { filasStockParaExportar, parsearVentasEnLinea, cruzarVentas } from '../u
 /**
  * 🔄 Sync — Sincronización con la tienda virtual (ritual diario al cierre).
  *
- *  ① Exportar stock: genera un Excel (codigo | nombre | talla | color | stock)
- *    que se sube de inmediato en el admin web → Sincronizar.
+ *  ① Exportar stock: genera un Excel (codigo | nombre | talla | color |
+ *    stock | precio) que se sube de inmediato en el admin web → Sincronizar.
  *  ② Importar ventas en línea: lee el Excel que devuelve la nube y descuenta
  *    el stock local en UNA transacción (products + barcodes + kardex).
  *    NO crea registros en `sales`: el dinero de la web no entra a la caja
@@ -52,7 +52,7 @@ export default function Sync() {
 
             const XLSX = await import('xlsx');
             const hoja = XLSX.utils.json_to_sheet(filas, {
-                header: ['codigo', 'nombre', 'talla', 'color', 'stock'],
+                header: ['codigo', 'nombre', 'talla', 'color', 'stock', 'precio'],
             });
             const libro = XLSX.utils.book_new();
             XLSX.utils.book_append_sheet(libro, hoja, 'stock');
