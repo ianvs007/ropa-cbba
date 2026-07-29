@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { filasStockParaExportar, parsearVentasEnLinea, cruzarVentas } from '../utils/syncExcel';
+import { filasStockParaExportar, parsearVentasEnLinea, cruzarVentas, ventasDesdeApi } from '../utils/syncExcel';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // filasStockParaExportar
@@ -120,6 +120,75 @@ describe('parsearVentasEnLinea', () => {
     it('codigo numérico de Excel se convierte a string para el cruce', () => {
         const { ventas } = parsearVentasEnLinea([{ codigo: 1, cantidad: 1 }]);
         expect(ventas[0].codigo).toBe('1');
+    });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// ventasDesdeApi
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('ventasDesdeApi', () => {
+    it('normaliza una venta válida de la API al MISMO shape que parsearVentasEnLinea', () => {
+        const apiVentas = [{
+            codigo: '00001', nombre: 'Vestido Floral', talla: 'M', color: 'Rojo',
+            cantidad: 2, precio_unit: 150, estado: 'PAGADO',
+            pedido: 'AB12CD34', fecha: '2026-07-27 10:30:00',
+        }];
+        const { ventas, errores } = ventasDesdeApi(apiVentas);
+        expect(errores).toHaveLength(0);
+        // Mismo shape exacto que produce parsearVentasEnLinea
+        expect(ventas).toEqual([{
+            codigo: '00001', nombre: 'Vestido Floral', talla: 'M', color: 'Rojo',
+            cantidad: 2, precioUnit: 150, estado: 'pagado',
+            pedido: 'AB12CD34', fecha: '2026-07-27 10:30:00',
+        }]);
+    });
+
+    it('cantidad inválida va a errores y no bloquea las válidas', () => {
+        const apiVentas = [
+            { codigo: '00001', cantidad: 1, fecha: '2026-07-27 09:00:00' }, // válida
+            { codigo: '00003', cantidad: 0 },                                // cantidad cero
+            { codigo: '00004', cantidad: 2.5 },                              // no entera
+            { codigo: '00005', cantidad: 'dos' },                            // no numérica
+            { codigo: '00006', cantidad: 2 },                                // válida
+        ];
+        const { ventas, errores } = ventasDesdeApi(apiVentas);
+        expect(ventas.map(v => v.codigo)).toEqual(['00001', '00006']);
+        expect(errores).toHaveLength(3);
+        expect(errores[0]).toContain('cantidad inválida');
+    });
+
+    it('código vacío va a errores', () => {
+        const { ventas, errores } = ventasDesdeApi([
+            { codigo: '', cantidad: 1 },
+            { cantidad: 2 }, // sin campo codigo
+        ]);
+        expect(ventas).toHaveLength(0);
+        expect(errores).toHaveLength(2);
+        expect(errores[0]).toContain('código vacío');
+    });
+
+    it('estado cancelado NO se filtra (mismo criterio que parsearVentasEnLinea): se normaliza a minúsculas', () => {
+        const { ventas, errores } = ventasDesdeApi([
+            { codigo: '00001', cantidad: 1, estado: 'CANCELADO' },
+        ]);
+        expect(errores).toHaveLength(0);
+        expect(ventas).toHaveLength(1);
+        expect(ventas[0].estado).toBe('cancelado');
+    });
+
+    it('campos ausentes se sanean: precio_unit inválido → 0, textos → string', () => {
+        const { ventas } = ventasDesdeApi([{ codigo: 7, cantidad: 1, precio_unit: 'caro' }]);
+        expect(ventas[0]).toEqual({
+            codigo: '7', nombre: '', talla: '', color: '',
+            cantidad: 1, precioUnit: 0, estado: '', pedido: '', fecha: '',
+        });
+    });
+
+    it('con lista vacía o nula devuelve ambos arrays vacíos', () => {
+        expect(ventasDesdeApi([])).toEqual({ ventas: [], errores: [] });
+        expect(ventasDesdeApi()).toEqual({ ventas: [], errores: [] });
+        expect(ventasDesdeApi(null)).toEqual({ ventas: [], errores: [] });
     });
 });
 

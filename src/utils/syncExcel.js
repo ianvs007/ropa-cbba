@@ -125,6 +125,58 @@ export function parsearVentasEnLinea(jsonRows = []) {
 }
 
 /**
+ * Normaliza las ventas que devuelve la API de la tienda virtual
+ * (POST /api/sync o GET /api/sync/ventas) al MISMO shape que produce
+ * parsearVentasEnLinea, para que el cruce y el descuento de stock usen
+ * exactamente el mismo código que la importación por Excel.
+ *
+ * Campos de entrada de la API: { codigo, nombre, talla, color, cantidad,
+ * precio_unit, estado, pedido, fecha }.
+ *
+ * Validaciones equivalentes a parsearVentasEnLinea (las inválidas van a
+ * `errores` y NO bloquean el resto):
+ *  - codigo no vacío
+ *  - cantidad entera > 0
+ *
+ * @param {Array<Object>} ventasApi - Array `ventas` de la respuesta de la API
+ * @returns {{ ventas: Array<{codigo, nombre, talla, color, cantidad, precioUnit, estado, pedido, fecha}>, errores: Array<string> }}
+ */
+export function ventasDesdeApi(ventasApi = []) {
+    const ventas = [];
+    const errores = [];
+
+    (ventasApi || []).forEach((item, idx) => {
+        const numVenta = idx + 1; // posición en el array de la API
+
+        const codigo = String(item?.codigo ?? '').trim();
+        if (!codigo) {
+            errores.push(`Venta ${numVenta}: código vacío`);
+            return;
+        }
+
+        const cantidad = Number(item?.cantidad);
+        if (!Number.isInteger(cantidad) || cantidad <= 0) {
+            errores.push(`Venta ${numVenta}: cantidad inválida (${item?.cantidad ?? 'vacía'})`);
+            return;
+        }
+
+        ventas.push({
+            codigo,
+            nombre: String(item?.nombre ?? '').trim(),
+            talla: String(item?.talla ?? '').trim(),
+            color: String(item?.color ?? '').trim(),
+            cantidad,
+            precioUnit: Number(item?.precio_unit) || 0,
+            estado: String(item?.estado ?? '').trim().toLowerCase(),
+            pedido: String(item?.pedido ?? '').trim(),
+            fecha: String(item?.fecha ?? '').trim(),
+        });
+    });
+
+    return { ventas, errores };
+}
+
+/**
  * Cruza las ventas en línea contra los productos locales (por shortCode) y
  * prepara la vista previa del descuento de stock.
  *

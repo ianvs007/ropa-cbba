@@ -3,20 +3,29 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getLocalISOString } from '../db';
 import {
     RefreshCw, Download, Upload, FileSpreadsheet, AlertTriangle,
-    CheckCircle, X, Loader2
+    CheckCircle, X, Loader2, Globe, KeyRound, Pencil, Zap
 } from 'lucide-react';
 import { useNotification } from '../hooks/useNotification';
-import { filasStockParaExportar, parsearVentasEnLinea, cruzarVentas } from '../utils/syncExcel';
+import {
+    filasStockParaExportar, parsearVentasEnLinea, cruzarVentas, ventasDesdeApi
+} from '../utils/syncExcel';
+import { aplicarVentas } from '../utils/syncAplicar';
+
+/** URL por defecto de la tienda virtual (configurable en la tarjeta ③) */
+const URL_TIENDA_DEFAULT = 'https://tienda-virtual-26n.pages.dev';
 
 /**
  * 🔄 Sync — Sincronización con la tienda virtual (ritual diario al cierre).
  *
- *  ① Exportar stock: genera un Excel (codigo | nombre | talla | color |
- *    stock | precio) que se sube de inmediato en el admin web → Sincronizar.
- *  ② Importar ventas en línea: lee el Excel que devuelve la nube y descuenta
- *    el stock local en UNA transacción (products + barcodes + kardex).
- *    NO crea registros en `sales`: el dinero de la web no entra a la caja
- *    física, solo baja stock (decisión del dueño).
+ *  ③ Sincronización directa (1 clic, RECOMENDADA): envía el stock por API y
+ *    aplica las ventas web devueltas, sin archivos Excel.
+ *  ① Exportar stock (respaldo): genera un Excel (codigo | nombre | talla |
+ *    color | stock | precio) que se sube de inmediato en el admin web → Sincronizar.
+ *  ② Importar ventas en línea (respaldo): lee el Excel que devuelve la nube y
+ *    descuenta el stock local.
+ *  Tanto ② como ③ descuentan en UNA transacción (products + barcodes +
+ *  kardex, vía `aplicarVentas`) y NO crean registros en `sales`: el dinero de
+ *  la web no entra a la caja física, solo baja stock (decisión del dueño).
  */
 export default function Sync() {
     const { msg, showMsg } = useNotification();
@@ -32,6 +41,20 @@ export default function Sync() {
     const [erroresParseo, setErroresParseo] = React.useState([]);
     const [aplicando, setAplicando] = React.useState(false);
     const [reporte, setReporte] = React.useState(null);      // resumen tras confirmar
+
+    // ── Estado: sincronización directa (API) ──
+    const syncUrlSetting = useLiveQuery(() => db.settings.get('syncUrl'), []);
+    const syncTokenSetting = useLiveQuery(() => db.settings.get('syncToken'), []);
+    const ultimaSyncSetting = useLiveQuery(() => db.settings.get('ultimaSyncDirecta'), []);
+    const [editandoConfig, setEditandoConfig] = React.useState(false);
+    const [urlInput, setUrlInput] = React.useState(URL_TIENDA_DEFAULT);
+    const [tokenInput, setTokenInput] = React.useState('');
+    const [guardandoConfig, setGuardandoConfig] = React.useState(false);
+    const [sincronizando, setSincronizando] = React.useState(false);
+    const [progresoDirecta, setProgresoDirecta] = React.useState(null); // { hechas, total }
+    const [resultadoDirecta, setResultadoDirecta] = React.useState(null); // resumen tras sincronizar
+
+    const configOk = Boolean(syncUrlSetting?.value && syncTokenSetting?.value);
 
     // Conteo de productos activos sin código corto (advertencia en tarjeta ①)
     const { totalExportables, sinCodigoCount } = React.useMemo(() => {
@@ -121,61 +144,10 @@ export default function Sync() {
 
         setAplicando(true);
         try {
-            // UNA transacción: si algo falla a la mitad, Dexie hace rollback
-            // completo y el stock nunca queda descontado parcialmente.
-            const unidadesDescontadas = await db.transaction(
-                'rw', [db.products, db.barcodes, db.kardex, db.settings],
-                async () => {
-                    let unidades = 0;
-                    let fechaMax = null;
-
-                    for (const fila of preview) {
-                        if (fila.aDescontar <= 0 || !fila.productId) continue;
-
-                        const product = await db.products.get(fila.productId);
-                        if (!product) continue;
-
-                        // Defensivo: el stock pudo cambiar desde la vista previa
-                        const qty = Math.min(fila.aDescontar, product.stock);
-                        if (qty <= 0) continue;
-
-                        const nuevoStock = product.stock - qty;
-                        await db.products.update(product.id, { stock: nuevoStock });
-
-                        // Marcar como usadas las primeras `qty` unidades disponibles (FIFO por id)
-                        const unidadesLibres = await db.barcodes
-                            .where('productId').equals(product.id)
-                            .and(b => !b.used)
-                            .limit(qty)
-                            .toArray();
-                        for (const b of unidadesLibres) {
-                            await db.barcodes.update(b.id, { used: true });
-                        }
-
-                        await db.kardex.add({
-                            productId: product.id,
-                            date: getLocalISOString(),
-                            type: 'salida',
-                            qty,
-                            notes: `VENTA EN LÍNEA #${fila.pedido || 'SIN-REF'} (${fila.estado || 'pagado'})`.toUpperCase(),
-                            balanceAfter: nuevoStock,
-                            unitCodes: unidadesLibres.map(b => ({
-                                shortCode: b.shortCode || '',
-                                barcode: b.barcode || '',
-                            })),
-                        });
-
-                        unidades += qty;
-                        if (fila.fecha && (!fechaMax || fila.fecha > fechaMax)) fechaMax = fila.fecha;
-                    }
-
-                    // Bloquea el doble descuento si importan el mismo archivo otra vez
-                    if (fechaMax) {
-                        await db.settings.put({ key: 'ultimaImportacionVentas', value: fechaMax });
-                    }
-                    return unidades;
-                }
-            );
+            // UNA transacción (en `aplicarVentas`): si algo falla a la mitad,
+            // Dexie hace rollback completo y el stock nunca queda descontado
+            // parcialmente. La misma función usa la sincronización directa (③).
+            const { unidades: unidadesDescontadas } = await aplicarVentas(preview);
 
             setReporte({
                 aplicadas: aplicables.length,
@@ -192,6 +164,140 @@ export default function Sync() {
     };
 
     const totalADescontar = (preview || []).reduce((s, f) => s + (f.aDescontar || 0), 0);
+
+    // ══════════════════ ③ SINCRONIZACIÓN DIRECTA (API) ══════════════════
+    const handleEditarConfig = () => {
+        setUrlInput(syncUrlSetting?.value || URL_TIENDA_DEFAULT);
+        setTokenInput(syncTokenSetting?.value || '');
+        setEditandoConfig(true);
+    };
+
+    const handleGuardarConfig = async () => {
+        const url = (urlInput.trim() || URL_TIENDA_DEFAULT).replace(/\/+$/, '');
+        const token = tokenInput.trim();
+        if (!token) {
+            showMsg('error', 'Pega el token de sincronización (admin web → Ajustes)');
+            return;
+        }
+        setGuardandoConfig(true);
+        try {
+            await db.settings.put({ key: 'syncUrl', value: url });
+            await db.settings.put({ key: 'syncToken', value: token });
+            setEditandoConfig(false);
+            showMsg('success', 'Configuración guardada ✓');
+        } catch (err) {
+            showMsg('error', `No se pudo guardar la configuración: ${err.message}`);
+        } finally {
+            setGuardandoConfig(false);
+        }
+    };
+
+    const handleSincronizarAhora = async () => {
+        const base = (syncUrlSetting?.value || URL_TIENDA_DEFAULT).replace(/\/+$/, '');
+        const token = syncTokenSetting?.value;
+        if (!base || !token) {
+            showMsg('error', 'Configura primero la URL y el token de la tienda');
+            return;
+        }
+
+        setSincronizando(true);
+        setResultadoDirecta(null);
+        setProgresoDirecta(null);
+        try {
+            // a) Armar las filas de stock (solo activos con código corto)
+            const todos = await db.products.toArray();
+            const { filas: filasStock, sinCodigo } = filasStockParaExportar(todos);
+            if (filasStock.length === 0) {
+                showMsg('error', 'No hay productos activos con código corto para sincronizar');
+                return;
+            }
+            if (filasStock.length > 5000) {
+                showMsg('error', `Hay ${filasStock.length} variantes; la API acepta máximo 5000 por sincronización`);
+                return;
+            }
+            // Se envían también nombre y precio: si la prenda no existe en la
+            // web, la tienda la CREA en el mismo clic (carga inicial incluida).
+            const filas = filasStock.map(({ codigo, nombre, talla, color, stock, precio }) => ({ codigo, nombre, talla, color, stock, precio }));
+
+            // b) POST a la API en LOTES de 250 para mostrar el avance en %.
+            // Solo el último lote va con finalizar: true (la tienda recién ahí
+            // cierra la ventana de ventas y las devuelve). Reintentar tras un
+            // fallo es seguro: lo ya creado/ajustado se recalcula igual.
+            const TAM_LOTE = 250;
+            let creadas = 0, actualizadas = 0, advertencias = 0;
+            const detalleAvisos = [];
+            let ventasApi = [];
+            setProgresoDirecta({ hechas: 0, total: filas.length });
+            for (let i = 0; i < filas.length; i += TAM_LOTE) {
+                const esUltimo = i + TAM_LOTE >= filas.length;
+                let resp;
+                try {
+                    resp = await fetch(`${base}/api/sync`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ filas: filas.slice(i, i + TAM_LOTE), finalizar: esUltimo }),
+                    });
+                } catch {
+                    throw new Error('Sin internet o la tienda está caída. Revisa tu conexión y vuelve a presionar "Sincronizar ahora": continuará sin duplicar nada.');
+                }
+                if (resp.status === 401) throw new Error('Token inválido: revísalo en el admin web → Ajustes.');
+                if (resp.status === 503) throw new Error('La tienda aún no tiene token configurado (admin web → Ajustes).');
+                if (resp.status === 400) {
+                    const data400 = await resp.json().catch(() => null);
+                    throw new Error(`La tienda rechazó las filas: ${data400?.error || 'datos inválidos'}.`);
+                }
+                if (!resp.ok) throw new Error(`La tienda respondió con error ${resp.status}. Vuelve a presionar "Sincronizar ahora": continuará sin duplicar nada.`);
+                const data = await resp.json();
+                creadas += data.creadas ?? 0;
+                actualizadas += data.actualizadas ?? 0;
+                advertencias += (data.advertencias ?? 0) + (Array.isArray(data.avisosImportacion) ? data.avisosImportacion.length : 0);
+                if (Array.isArray(data.detalle)) detalleAvisos.push(...data.detalle.filter(d => d.aviso));
+                if (esUltimo) ventasApi = data.ventas || [];
+                setProgresoDirecta({ hechas: Math.min(i + TAM_LOTE, filas.length), total: filas.length });
+            }
+
+            // c) Aplicar las ventas devueltas con la MISMA lógica de la tarjeta ②.
+            // El guard `ultimaImportacionVentas` (que actualiza `aplicarVentas`)
+            // evita el doble descuento si se reintenta tras un fallo a mitad de camino.
+            const { ventas, errores } = ventasDesdeApi(ventasApi);
+            const [productosFrescos, ultima] = await Promise.all([
+                db.products.toArray(),
+                db.settings.get('ultimaImportacionVentas'),
+            ]);
+            const cruzadas = cruzarVentas(ventas, productosFrescos, ultima?.value || null);
+            const { unidades } = await aplicarVentas(cruzadas);
+
+            // d) Persistir la fecha de la última sync directa exitosa
+            const fechaSync = getLocalISOString();
+            await db.settings.put({ key: 'ultimaSyncDirecta', value: fechaSync });
+
+            const aplicables = cruzadas.filter(f => f.aDescontar > 0);
+            setResultadoDirecta({
+                creadas,
+                actualizadas,
+                advertencias,
+                detalle: detalleAvisos,
+                omitidos: sinCodigo.length,
+                ventasRecibidas: ventas.length,
+                ventasAplicadas: aplicables.length,
+                unidades,
+                avisosVentas: cruzadas.filter(f => f.aviso).length,
+                erroresVentas: errores,
+            });
+            showMsg('success',
+                `✓ Sincronizado: ${creadas ? `${creadas} prendas nuevas creadas en la web · ` : ''}` +
+                `${actualizadas} variantes ajustadas en la web · ` +
+                `${unidades} ítem(s) vendidos web descontados localmente`);
+        } catch (err) {
+            showMsg('error', err.message);
+        } finally {
+            setSincronizando(false);
+            setProgresoDirecta(null);
+        }
+    };
 
     return (
         <div className="max-w-7xl mx-auto fade-in h-full flex flex-col">
@@ -211,6 +317,165 @@ export default function Sync() {
                     {msg.text}
                 </div>
             )}
+
+            {/* ══════════ TARJETA ③ SINCRONIZACIÓN DIRECTA (RECOMENDADA) ══════════ */}
+            <div className="fashion-card p-6 mb-4 border-2 border-pink-300 relative fade-in">
+                <span className="absolute -top-3 left-6 badge-rose shadow-sm">Recomendada</span>
+
+                <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-xl bg-pink-600 flex items-center justify-center shrink-0">
+                        <Zap size={18} strokeWidth={1.8} className="text-white" />
+                    </div>
+                    <div>
+                        <h2 className="font-black text-pink-950 uppercase tracking-tight">Sincronización directa (1 clic)</h2>
+                        <p className="text-xs text-pink-500 font-medium">Sin archivos Excel: sube el stock a la web y baja las ventas web por API</p>
+                    </div>
+                </div>
+
+                {/* Configuración (una sola vez) */}
+                {(!configOk || editandoConfig) ? (
+                    <div className="bg-pink-50/60 border border-pink-100 rounded-xl p-4 mb-4 space-y-3">
+                        <div>
+                            <label className="flex items-center gap-1.5 text-xs font-bold text-pink-700 mb-1">
+                                <Globe size={13} /> URL de la tienda
+                            </label>
+                            <input
+                                type="url"
+                                value={urlInput}
+                                onChange={e => setUrlInput(e.target.value)}
+                                placeholder={URL_TIENDA_DEFAULT}
+                                className="w-full px-3 py-2 rounded-xl border border-pink-200 text-sm focus:outline-none focus:border-pink-400 bg-white"
+                            />
+                        </div>
+                        <div>
+                            <label className="flex items-center gap-1.5 text-xs font-bold text-pink-700 mb-1">
+                                <KeyRound size={13} /> Token de sincronización
+                            </label>
+                            <input
+                                type="password"
+                                value={tokenInput}
+                                onChange={e => setTokenInput(e.target.value)}
+                                placeholder="Lo generas en el admin web → Ajustes"
+                                className="w-full px-3 py-2 rounded-xl border border-pink-200 text-sm focus:outline-none focus:border-pink-400 bg-white"
+                            />
+                        </div>
+                        <div className="flex gap-2 justify-end">
+                            {configOk && (
+                                <button onClick={() => setEditandoConfig(false)} disabled={guardandoConfig}
+                                    className="px-4 py-2 rounded-xl text-sm font-semibold border border-gray-200 text-gray-500 hover:border-pink-300 transition-all">
+                                    Cancelar
+                                </button>
+                            )}
+                            <button onClick={handleGuardarConfig} disabled={guardandoConfig}
+                                className="btn-primary flex items-center gap-2 px-5 py-2 text-sm disabled:opacity-60">
+                                {guardandoConfig ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle size={15} />}
+                                {guardandoConfig ? 'Guardando…' : 'Guardar configuración'}
+                            </button>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-green-50 border border-green-200 rounded-xl px-4 py-3 mb-4">
+                        <p className="text-sm text-green-700 font-semibold flex items-center gap-2 min-w-0">
+                            <CheckCircle size={16} className="shrink-0" />
+                            <span className="truncate">Configurado ✓ · {syncUrlSetting?.value}</span>
+                        </p>
+                        <button onClick={handleEditarConfig}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border border-green-300 text-green-700 hover:bg-green-100 transition-all shrink-0">
+                            <Pencil size={13} /> Editar
+                        </button>
+                    </div>
+                )}
+
+                {ultimaSyncSetting?.value && (
+                    <p className="text-[11px] text-pink-400 font-semibold mb-4">
+                        Última sincronización directa: {String(ultimaSyncSetting.value).replace('T', ' ').slice(0, 19)}
+                    </p>
+                )}
+
+                <button onClick={handleSincronizarAhora} disabled={!configOk || sincronizando || editandoConfig}
+                    className="btn-primary w-full flex items-center justify-center gap-2 py-3 disabled:opacity-60">
+                    {sincronizando ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
+                    {sincronizando ? 'Sincronizando…' : '🔄 Sincronizar ahora'}
+                </button>
+                {progresoDirecta && (
+                    <div className="mt-3 fade-in">
+                        <div className="h-2.5 w-full rounded-full bg-pink-100 overflow-hidden">
+                            <div className="h-full rounded-full bg-pink-600 transition-all"
+                                style={{ width: `${Math.round((progresoDirecta.hechas / progresoDirecta.total) * 100)}%` }} />
+                        </div>
+                        <p className="text-[11px] text-pink-500 font-semibold text-center mt-1">
+                            Sincronizando {progresoDirecta.hechas} de {progresoDirecta.total} prendas
+                            ({Math.round((progresoDirecta.hechas / progresoDirecta.total) * 100)}%) — no cierres esta ventana
+                        </p>
+                    </div>
+                )}
+                {!configOk && !editandoConfig && (
+                    <p className="text-[11px] text-pink-400 font-semibold text-center mt-2">
+                        Guarda la URL y el token para habilitar el botón.
+                    </p>
+                )}
+
+                {/* Resultado de la última sincronización */}
+                {resultadoDirecta && (
+                    <div className="mt-4 fade-in">
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+                            {[
+                                { label: 'Prendas nuevas creadas en la web', value: resultadoDirecta.creadas },
+                                { label: 'Variantes ajustadas en la web', value: resultadoDirecta.actualizadas },
+                                { label: 'Ítems web descontados', value: resultadoDirecta.unidades },
+                                { label: 'Ventas web recibidas', value: resultadoDirecta.ventasRecibidas },
+                                { label: 'Avisos', value: resultadoDirecta.advertencias + resultadoDirecta.avisosVentas },
+                            ].map(({ label, value }) => (
+                                <div key={label} className="bg-pink-50/60 border border-pink-100 rounded-xl p-3 text-center">
+                                    <p className="text-2xl font-black text-pink-900">{value}</p>
+                                    <p className="text-[10px] text-pink-500 font-bold uppercase tracking-wide">{label}</p>
+                                </div>
+                            ))}
+                        </div>
+
+                        {resultadoDirecta.omitidos > 0 && (
+                            <div className="mb-3 flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+                                <AlertTriangle size={16} className="text-amber-500 shrink-0 mt-0.5" />
+                                <p className="text-xs text-amber-800">
+                                    <span className="font-bold">{resultadoDirecta.omitidos} producto(s) activo(s) sin código corto</span>{' '}
+                                    no se enviaron; su stock web quedará desactualizado.
+                                </p>
+                            </div>
+                        )}
+
+                        {resultadoDirecta.detalle.length > 0 && (
+                            <details className="mb-3 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+                                <summary className="text-xs font-bold text-amber-800 cursor-pointer">
+                                    Ver detalle de advertencias de la tienda ({resultadoDirecta.detalle.length})
+                                </summary>
+                                <ul className="text-xs text-amber-800 mt-2 space-y-0.5 list-disc list-inside">
+                                    {resultadoDirecta.detalle.slice(0, 20).map((d, i) => (
+                                        <li key={i}>{typeof d === 'string' ? d : JSON.stringify(d)}</li>
+                                    ))}
+                                    {resultadoDirecta.detalle.length > 20 && <li>…y {resultadoDirecta.detalle.length - 20} más</li>}
+                                </ul>
+                            </details>
+                        )}
+
+                        {resultadoDirecta.erroresVentas.length > 0 && (
+                            <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+                                <AlertTriangle size={16} className="text-amber-500 shrink-0 mt-0.5" />
+                                <div className="text-xs text-amber-800">
+                                    <p className="font-bold mb-1">{resultadoDirecta.erroresVentas.length} venta(s) de la API ignorada(s) por datos inválidos:</p>
+                                    <ul className="space-y-0.5 list-disc list-inside">
+                                        {resultadoDirecta.erroresVentas.slice(0, 5).map((e, i) => <li key={i}>{e}</li>)}
+                                        {resultadoDirecta.erroresVentas.length > 5 && <li>…y {resultadoDirecta.erroresVentas.length - 5} más</li>}
+                                    </ul>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+
+            <p className="text-[11px] text-gray-400 font-semibold uppercase tracking-wide mb-2">
+                Respaldo: flujo con archivos Excel
+            </p>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
                 {/* ══════════ TARJETA ① EXPORTAR STOCK ══════════ */}
