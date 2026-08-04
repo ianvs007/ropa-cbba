@@ -142,9 +142,18 @@ export default function CashClose() {
 
             const closedOpeningIds = new Set(closures.map(c => c.openingId).filter(Boolean));
 
+            // Días regularizados con cierre RETROACTIVO (de cualquier usuario):
+            // limpian el día completo, incluidas las aperturas sin cierre por openingId
+            const retroClosures = await db.table('cashClosures')
+                .where('date').above(iso)
+                .filter(c => !!c.closedAt && c.retroactive === true)
+                .toArray();
+            const retroDates = new Set(retroClosures.map(c => (c.date || '').slice(0, 10)));
+
             // Turnos sin cierre (excluyendo el turno activo de hoy)
             return openings
-                .filter(o => !closedOpeningIds.has(o.id) && (o.date < today || (o.date === today && o.id !== activeShiftId)))
+                .filter(o => !closedOpeningIds.has(o.id) && !retroDates.has((o.date || '').slice(0, 10))
+                    && (o.date < today || (o.date === today && o.id !== activeShiftId)))
                 .sort((a, b) => (b.openedAt || '').localeCompare(a.openedAt || '') || (b.id - a.id))
                 .slice(0, 10);
         } catch (e) {
@@ -292,8 +301,11 @@ export default function CashClose() {
         }
 
         // ── Autorización por fecha: hoy = normal; pasada pendiente = retroactivo;
-        //    futura = bloqueada. La edición de un cierre existente (existingId)
-        //    conserva su flujo/flag original.
+        //    futura = bloqueada. Al actualizar un cierre existente (existingId) se
+        //    conserva su flag, PERO si el día sigue pendiente (evaluation.retroactive)
+        //    se promueve a retroactivo: un cierre viejo no-retroactivo no limpia los
+        //    movimientos de OTROS usuarios del día y lo dejaba atascado para siempre
+        //    (la corrección nunca lo convertía en retroactivo → día pendiente eterno).
         const evaluation = canCloseCashDate({
             selectedDate: date,
             today: frozenToday,
@@ -303,7 +315,9 @@ export default function CashClose() {
             showMsg('error', `⚠️ ${evaluation.reason}`);
             return;
         }
-        const isRetro = existingId ? !!existing?.retroactive : evaluation.retroactive;
+        const isRetro = existingId
+            ? (!!existing?.retroactive || evaluation.retroactive)
+            : evaluation.retroactive;
 
         const RETRO_NOTE = 'CIERRE RETROACTIVO — regularización';
         let finalNotes = notes.trim().toUpperCase();

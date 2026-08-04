@@ -2,8 +2,10 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
 import { findPendingClosureDates } from '../utils/pendingClosures';
 
-// Ventana de detección: consultas acotadas por el índice `date`, sin table scan
-const LOOKBACK_DAYS = 60;
+// Ventana de detección: consultas acotadas por el índice `date`, sin table scan.
+// 365 días: con 60 los pendientes antiguos se volvían invisibles e INCERRABLES
+// por la vía normal (canCloseCashDate rechaza lo que no está en la lista).
+const LOOKBACK_DAYS = 365;
 
 /**
  * 💰 Fechas con cierre de caja pendiente (últimos 60 días, reactivo).

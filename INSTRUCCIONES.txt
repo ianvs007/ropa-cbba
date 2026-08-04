@@ -1,0 +1,72 @@
+============================================================
+ ACTUALIZACIÓN — Módulo de Cierre de Caja (2026-08-04)
+============================================================
+
+CONTENIDO DEL PAQUETE
+---------------------
+  src/components/CashClose.jsx          (modificado)
+  src/components/Layout.jsx             (modificado)
+  src/components/Users.jsx              (modificado)
+  src/hooks/usePendingClosureDates.js   (modificado)
+  regularizar-cierres-masivo.js         (herramienta, 1 sola ejecución)
+  INSTRUCCIONES.txt                     (este archivo)
+
+QUÉ CORRIGE
+-----------
+ 1. Un cierre viejo NO retroactivo ya no atasca el día: al corregirlo
+    o re-cerrarlo se promueve a retroactivo y limpia el día completo.
+ 2. El modal "Turnos Sin Cerrar" y el panel de turnos ya reconocen los
+    días regularizados con cierre retroactivo (no más falsos pendientes).
+ 3. No se pueden eliminar usuarios con ventas/abonos/cierres: el sistema
+    obliga a DESACTIVARLOS (evita ventas huérfanas que atascan cierres).
+ 4. La detección de días pendientes ahora mira 365 días atrás (antes 60):
+    ningún pendiente vuelve a quedar invisible e incerrable.
+
+IMPORTANTE — SUS DATOS NO SE TOCAN
+----------------------------------
+ La base de datos (ventas, productos, cierres, usuarios) NO está en la
+ carpeta del proyecto: vive en el navegador (IndexedDB). Reemplazar
+ archivos del proyecto NO borra ni modifica la información.
+ Aun así, por precaución: antes de empezar, genere un respaldo desde
+ el menú "Backup" de la aplicación en producción.
+
+PASO 1 — REEMPLAZAR ARCHIVOS (con el servicio detenido)
+-------------------------------------------------------
+ 1. Cierre el navegador y detenga el servicio (cierre la ventana del
+    servidor o ejecute de nuevo el .bat, que mata el proceso del puerto).
+ 2. Descomprima este zip DENTRO de la carpeta del proyecto en producción
+    (la misma carpeta donde está package.json), eligiendo
+    "Reemplazar archivos en el destino" cuando Windows lo pregunte.
+    Solo se sobrescriben los 4 archivos fuente indicados arriba.
+ 3. Inicie el servicio como siempre (iniciar-servicio.bat).
+
+PASO 2 — REPARAR LOS CIERRES PENDIENTES (una sola vez)
+------------------------------------------------------
+ 1. Abra la app en el navegador de producción e inicie sesión.
+ 2. Presione F12 → pestaña "Consola".
+    (Si Chrome bloquea el pegado, escriba: allow pasting  y Enter.)
+ 3. Abra el archivo regularizar-cierres-masivo.js con el Bloc de notas,
+    copie TODO su contenido, péguelo en la consola y presione Enter.
+    - El script muestra primero la lista de días pendientes y una tabla
+      con lo que hará (PROMOVER días con cierre viejo / CREAR los demás).
+    - Viene listo para ejecutar (DRY_RUN = false). Si prefiere primero
+      una simulación que no toca nada, cambie esa línea a true, ejecute,
+      revise, y vuelva a false para ejecutar de verdad.
+ 4. Cuando aparezca el mensaje verde "✅ Listo: N día(s) regularizados",
+    recargue la app con F5: el banner rojo y el modal de pendientes
+    deben desaparecer.
+
+PASO 3 — VERIFICAR
+------------------
+ - No aparece banner rojo ni modal "Turnos Sin Cerrar".
+ - En Cierre de Caja no hay "Días pendientes de cierre".
+ - Los reportes del día muestran los totales esperados.
+
+NOTAS
+-----
+ - El script regularizar-cierres-masivo.js es de UN SOLO USO. Una vez
+   verificado el paso 3, puede borrarlo del proyecto.
+ - De aquí en adelante: cerrar caja todos los días; si un día se olvida,
+   se regulariza al día siguiente desde el panel "Días pendientes" sin
+   trabas. Personal que deja de trabajar: DESACTIVAR, nunca eliminar.
+============================================================

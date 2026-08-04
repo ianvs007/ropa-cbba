@@ -17,6 +17,10 @@ export default function Users() {
     const [form, setForm] = React.useState({ username: '', name: '', password: '', role: 'seller', active: true, permissions: {} });
     const [msg, setMsg] = React.useState(null);
     const [delId, setDelId] = React.useState(null);
+    // Usuario que NO se puede eliminar por tener historial (ventas/abonos/cierres):
+    // eliminarlo dejaría movimientos huérfanos (sellerId sin usuario) que bloquean
+    // la detección de cierres pendientes. Se ofrece desactivar en su lugar.
+    const [delBlocked, setDelBlocked] = React.useState(null);
     const [showPass, setShowPass] = React.useState(false);
     const [formBusy, setFormBusy] = React.useState(false);
 
@@ -31,6 +35,29 @@ export default function Users() {
     const closeForm = () => {
         setShowForm(false); setEditing(null);
         setForm({ username: '', name: '', password: '', role: 'seller', active: true, permissions: {} });
+    };
+
+    // Antes de permitir eliminar, verificar que el usuario no tenga historial.
+    // Un usuario con ventas/abonos/cierres NO se borra: sus movimientos quedarían
+    // huérfanos (sellerId sin usuario) y atascarían los cierres de caja pendientes.
+    const handleDeleteRequest = async (u) => {
+        const uid = u.id?.toString();
+        const [nSales, nPayments, nClosures] = await Promise.all([
+            db.sales.filter(s => s.sellerId?.toString() === uid).count(),
+            db.reservationPayments.filter(p => p.userId?.toString() === uid).count(),
+            db.table('cashClosures').filter(c => c.userId?.toString() === uid).count(),
+        ]);
+        if (nSales + nPayments + nClosures > 0) {
+            setDelBlocked({ id: u.id, name: u.name || u.username, nSales, nPayments, nClosures });
+        } else {
+            setDelId(u.id);
+        }
+    };
+
+    const handleDeactivate = async () => {
+        await db.users.update(delBlocked.id, { active: false });
+        setDelBlocked(null);
+        showMsg('success', 'Usuario desactivado. Su historial queda intacto.');
     };
 
     const handleSave = async (e) => {
@@ -244,7 +271,7 @@ export default function Users() {
                                     <Edit2 size={15} />
                                 </button>
                                 {(users || []).length > 1 && (
-                                    <button onClick={() => setDelId(u.id)}
+                                    <button onClick={() => handleDeleteRequest(u)}
                                         aria-label="Eliminar usuario"
                                         className="text-red-400 hover:text-red-600 transition-colors">
                                         <Trash2 size={15} />
@@ -265,6 +292,40 @@ export default function Users() {
                     </div>
                 ))}
             </div>
+
+            {/* ════ VISTA BLOQUEO: USUARIO CON HISTORIAL NO SE PUEDE ELIMINAR ════ */}
+            {delBlocked && (
+                <div className="fixed inset-0 z-[100] bg-pink-900/40 backdrop-blur-md flex items-center justify-center p-6 fade-in">
+                    <div className="bg-white rounded-[3rem] shadow-2xl p-10 w-full max-w-md text-center border-2 border-amber-100">
+                        <div className="w-20 h-20 mx-auto bg-amber-100 text-amber-600 rounded-3xl flex items-center justify-center mb-6">
+                            <Shield size={40} />
+                        </div>
+                        <h3 className="text-2xl font-black text-pink-950 uppercase tracking-tight mb-2">No se puede eliminar</h3>
+                        <p className="text-pink-400 font-bold text-sm mb-4 leading-relaxed px-4 text-balance">
+                            <span className="text-pink-900">{delBlocked.name}</span> tiene historial en el sistema:
+                        </p>
+                        <div className="flex justify-center gap-2 mb-6 text-[11px] font-black uppercase tracking-wider">
+                            {delBlocked.nSales > 0 && <span className="bg-pink-50 text-pink-600 px-3 py-1 rounded-full">{delBlocked.nSales} ventas</span>}
+                            {delBlocked.nPayments > 0 && <span className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full">{delBlocked.nPayments} abonos</span>}
+                            {delBlocked.nClosures > 0 && <span className="bg-green-50 text-green-600 px-3 py-1 rounded-full">{delBlocked.nClosures} cierres</span>}
+                        </div>
+                        <p className="text-pink-400 font-bold text-xs mb-8 leading-relaxed px-4 text-balance">
+                            Eliminarlo dejaría esos movimientos huérfanos y dañaría reportes y cierres de caja.
+                            En su lugar puedes <span className="text-amber-600">desactivarlo</span>: perderá el acceso pero su historial queda intacto.
+                        </p>
+                        <div className="space-y-3">
+                            <button onClick={handleDeactivate}
+                                className="w-full bg-amber-500 text-white py-5 rounded-[2rem] font-black uppercase tracking-widest text-sm shadow-xl hover:bg-amber-600 transition-all">
+                                DESACTIVAR USUARIO
+                            </button>
+                            <button onClick={() => setDelBlocked(null)}
+                                className="w-full py-5 rounded-[2rem] font-black uppercase tracking-widest text-xs text-pink-300 hover:text-pink-500 transition-colors">
+                                CANCELAR
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* ════ VISTA CONFIRMACIÓN ELIMINACIÓN (PANTALLA COMPLETA) ════ */}
             {delId && (

@@ -71,8 +71,17 @@ export default function Layout({ children }) {
 
             const closedOpeningIds = new Set(closures.map(c => c.openingId).filter(Boolean));
 
+            // Días regularizados con cierre RETROACTIVO (de CUALQUIER usuario):
+            // limpian el día completo, incluidas las aperturas de este usuario
+            // que quedaron sin cierre vinculado por openingId
+            const retroClosures = await db.table('cashClosures')
+                .where('date').aboveOrEqual(iso)
+                .filter(c => !!c.closedAt && c.retroactive === true)
+                .toArray();
+            const retroDates = new Set(retroClosures.map(c => (c.date || '').slice(0, 10)));
+
             return openings
-                .filter(o => !closedOpeningIds.has(o.id) && o.date < today)
+                .filter(o => !closedOpeningIds.has(o.id) && !retroDates.has((o.date || '').slice(0, 10)) && o.date < today)
                 .sort((a, b) => (b.openedAt || '').localeCompare(a.openedAt || ''));
         } catch (e) {
             console.error('Error detectando pendientes:', e);
