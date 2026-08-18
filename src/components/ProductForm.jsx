@@ -1,6 +1,6 @@
 import React from 'react';
 import { X } from 'lucide-react';
-import { db, generateBarcode, generateBarcodesForProduct, getLocalISOString } from '../db';
+import { db, generateBarcode, generateBarcodesForProduct, generateShortCode, getLocalISOString } from '../db';
 import TypeaheadInput from './ui/TypeaheadInput';
 import { getEmbedding } from '../utils/garmentClassifier';
 
@@ -246,8 +246,27 @@ export default function ProductForm({
         // para impedir que un segundo submit cree un producto duplicado.
         setSaving(true);
         try {
+            // ── Blindaje anti-duplicados de shortCode ──
+            // El código se pre-genera al ABRIR el formulario (ProductList.openNew),
+            // así que dos pestañas abiertas comparten el mismo código. Se re-verifica
+            // en el momento del guardado (misma lógica de shortCodeExists: products ∪
+            // barcodes, excluyendo el propio producto en edición) y, si ya lo tomó
+            // otro, se regenera ahí mismo: la carrera se resuelve sola.
+            let shortCodeFinal = form.shortCode;
+            if (shortCodeFinal) {
+                const dupProducto = await db.products.where('shortCode').equals(shortCodeFinal).first();
+                const tomadoPorOtro = dupProducto && dupProducto.id !== editing;
+                const tomadoPorUnidad = !tomadoPorOtro &&
+                    !!(await db.barcodes.where('shortCode').equals(shortCodeFinal).first());
+                if (tomadoPorOtro || tomadoPorUnidad) {
+                    shortCodeFinal = await generateShortCode();
+                    showToast(`El código ${form.shortCode} ya estaba en uso; se asignó ${shortCodeFinal} automáticamente`, 'error');
+                }
+            }
+
             const data = {
                 ...form,
+                shortCode: shortCodeFinal,
                 name: form.name.trim().toUpperCase(),
                 category: form.category.toUpperCase(),
                 brand: form.brand.toUpperCase(),
@@ -329,6 +348,10 @@ export default function ProductForm({
                         const n = parseInt(shortCode, 10);
                         if (n > 0) existingRef.current.nums.add(n);
                     });
+                    // También el código del modelo recién guardado (pudo haber sido
+                    // regenerado por el blindaje anti-duplicados)
+                    const nModelo = parseInt(shortCodeFinal, 10);
+                    if (nModelo > 0) existingRef.current.nums.add(nModelo);
                     // Limpiar formulario y estados visuales
                     setForm({ ...EMPTY });
                     setUnitCodes([]);

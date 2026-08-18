@@ -72,6 +72,31 @@ export function filasStockParaExportar(products = []) {
 }
 
 /**
+ * Detecta códigos cortos repetidos en las filas de stock a exportar/sincronizar.
+ * Si un código aparece 2+ veces, la tienda virtual cruzaría la información de
+ * prendas distintas (products.codigo = shortCode), así que el envío/exportación
+ * debe BLOQUEARSE hasta reparar los duplicados (fixDuplicateProductShortCodes).
+ *
+ * @param {Array<{codigo, nombre, talla, color, stock, precio}>} filas - Salida de filasStockParaExportar
+ * @returns {Array<{ codigo: string, filas: Array }>} Un grupo por código repetido, ordenado por código
+ */
+export function codigosDuplicadosEnFilas(filas = []) {
+    const porCodigo = new Map();
+
+    for (const f of filas || []) {
+        const codigo = String(f?.codigo ?? '').trim();
+        if (!codigo) continue;
+        if (!porCodigo.has(codigo)) porCodigo.set(codigo, []);
+        porCodigo.get(codigo).push(f);
+    }
+
+    return [...porCodigo.entries()]
+        .filter(([, lista]) => lista.length > 1)
+        .map(([codigo, lista]) => ({ codigo, filas: lista }))
+        .sort((a, b) => a.codigo.localeCompare(b.codigo));
+}
+
+/**
  * Normaliza las filas crudas de XLSX.utils.sheet_to_json del Excel de ventas
  * en línea. Tolera encabezados con tildes, mayúsculas y alias comunes.
  *

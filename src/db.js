@@ -25,6 +25,8 @@ export {
     generateUniqueBarcode,
     generateShortCode,
     shortCodeExists,
+    findDuplicateProductShortCodes,
+    fixDuplicateProductShortCodes,
     generateBarcodesForProduct,
     fixMissingShortCodes,
     discountStock,

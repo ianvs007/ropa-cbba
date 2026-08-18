@@ -1,13 +1,14 @@
 import React from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, getLocalISOString } from '../db';
+import { db, getLocalISOString, fixDuplicateProductShortCodes } from '../db';
 import {
     RefreshCw, Download, Upload, FileSpreadsheet, AlertTriangle,
-    CheckCircle, X, Loader2, Globe, KeyRound, Pencil, Zap
+    CheckCircle, X, Loader2, Globe, KeyRound, Pencil, Zap, Wrench
 } from 'lucide-react';
 import { useNotification } from '../hooks/useNotification';
 import {
-    filasStockParaExportar, parsearVentasEnLinea, cruzarVentas, ventasDesdeApi
+    filasStockParaExportar, parsearVentasEnLinea, cruzarVentas, ventasDesdeApi,
+    codigosDuplicadosEnFilas
 } from '../utils/syncExcel';
 import { aplicarVentas } from '../utils/syncAplicar';
 
@@ -33,6 +34,11 @@ export default function Sync() {
     // ── Estado: exportación ──
     const products = useLiveQuery(() => db.products.toArray(), []);
     const [exportando, setExportando] = React.useState(false);
+
+    // ── Estado: códigos cortos duplicados (bloquea sync/exportación) ──
+    const [duplicadosLocales, setDuplicadosLocales] = React.useState(null);   // [{codigo, filas}]
+    const [reparandoDuplicados, setReparandoDuplicados] = React.useState(false);
+    const [reparacionDuplicados, setReparacionDuplicados] = React.useState(null); // reasignaciones hechas
 
     // ── Estado: importación ──
     const fileInputRef = React.useRef(null);
@@ -70,6 +76,16 @@ export default function Sync() {
             const { filas, sinCodigo } = filasStockParaExportar(todos);
             if (filas.length === 0) {
                 showMsg('error', 'No hay productos activos con código corto para exportar');
+                return;
+            }
+
+            // Bloqueo por códigos duplicados: si un código llega dos veces, la
+            // tienda virtual cruza la información de prendas distintas.
+            const dups = codigosDuplicadosEnFilas(filas);
+            if (dups.length > 0) {
+                setDuplicadosLocales(dups);
+                setReparacionDuplicados(null);
+                showMsg('error', `Exportación bloqueada: ${dups.length} código(s) corto(s) duplicado(s). Repáralos antes de continuar.`);
                 return;
             }
 
@@ -192,6 +208,33 @@ export default function Sync() {
         }
     };
 
+    // ══════════════════ REPARAR CÓDIGOS DUPLICADOS ══════════════════
+    const handleRepararDuplicados = async () => {
+        const grupos = duplicadosLocales || [];
+        const prendas = grupos.reduce((s, g) => s + g.filas.length, 0);
+        const confirmado = window.confirm(
+            `Se encontraron ${grupos.length} código(s) corto(s) duplicado(s) (${prendas} prendas involucradas).\n\n` +
+            `La reparación CONSERVA el código en la prenda más antigua de cada grupo y asigna códigos nuevos a las demás.\n` +
+            `Las prendas reasignadas quedarán desvinculadas de su ficha anterior en la tienda online: revísalas en el admin web y vuelve a sincronizar.\n\n` +
+            `¿Reparar ahora?`
+        );
+        if (!confirmado) return;
+
+        setReparandoDuplicados(true);
+        try {
+            const reasignaciones = await fixDuplicateProductShortCodes();
+            setReparacionDuplicados(reasignaciones);
+            setDuplicadosLocales(null);
+            showMsg('success', reasignaciones.length > 0
+                ? `Reparación lista: ${reasignaciones.length} prenda(s) recibieron código nuevo ✓ Vuelve a sincronizar/exportar.`
+                : 'No quedaban duplicados por reparar ✓');
+        } catch (err) {
+            showMsg('error', `No se pudo reparar: ${err.message}`);
+        } finally {
+            setReparandoDuplicados(false);
+        }
+    };
+
     const handleSincronizarAhora = async () => {
         const base = (syncUrlSetting?.value || URL_TIENDA_DEFAULT).replace(/\/+$/, '');
         const token = syncTokenSetting?.value;
@@ -211,6 +254,17 @@ export default function Sync() {
                 showMsg('error', 'No hay productos activos con código corto para sincronizar');
                 return;
             }
+
+            // Bloqueo por códigos duplicados: enviarlos cruzaría la información
+            // de prendas distintas en la tienda online (products.codigo = shortCode).
+            const dups = codigosDuplicadosEnFilas(filasStock);
+            if (dups.length > 0) {
+                setDuplicadosLocales(dups);
+                setReparacionDuplicados(null);
+                showMsg('error', `Sincronización bloqueada: ${dups.length} código(s) corto(s) duplicado(s). Repáralos antes de continuar.`);
+                return;
+            }
+
             if (filasStock.length > 5000) {
                 showMsg('error', `Hay ${filasStock.length} variantes; la API acepta máximo 5000 por sincronización`);
                 return;
@@ -226,6 +280,8 @@ export default function Sync() {
             const TAM_LOTE = 250;
             let creadas = 0, actualizadas = 0, advertencias = 0;
             const detalleAvisos = [];
+            const duplicadosApi = [];  // códigos repetidos detectados por la nube
+            const crucesApi = [];      // prendas cuyo nombre en la nube difiere del POS
             let ventasApi = [];
             setProgresoDirecta({ hechas: 0, total: filas.length });
             for (let i = 0; i < filas.length; i += TAM_LOTE) {
@@ -255,6 +311,8 @@ export default function Sync() {
                 actualizadas += data.actualizadas ?? 0;
                 advertencias += (data.advertencias ?? 0) + (Array.isArray(data.avisosImportacion) ? data.avisosImportacion.length : 0);
                 if (Array.isArray(data.detalle)) detalleAvisos.push(...data.detalle.filter(d => d.aviso));
+                if (Array.isArray(data.duplicados)) duplicadosApi.push(...data.duplicados);
+                if (Array.isArray(data.cruces)) crucesApi.push(...data.cruces);
                 if (esUltimo) ventasApi = data.ventas || [];
                 setProgresoDirecta({ hechas: Math.min(i + TAM_LOTE, filas.length), total: filas.length });
             }
@@ -280,6 +338,8 @@ export default function Sync() {
                 actualizadas,
                 advertencias,
                 detalle: detalleAvisos,
+                duplicados: duplicadosApi,
+                cruces: crucesApi,
                 omitidos: sinCodigo.length,
                 ventasRecibidas: ventas.length,
                 ventasAplicadas: aplicables.length,
@@ -315,6 +375,79 @@ export default function Sync() {
                         : 'bg-red-50 border border-red-200 text-red-700'}`}>
                     {msg.type === 'success' ? <CheckCircle size={16} /> : <X size={16} />}
                     {msg.text}
+                </div>
+            )}
+
+            {/* ══════════ BLOQUEO: CÓDIGOS CORTOS DUPLICADOS ══════════ */}
+            {duplicadosLocales && duplicadosLocales.length > 0 && (
+                <div className="mb-4 bg-red-50 border-2 border-red-400 rounded-xl p-4 fade-in">
+                    <div className="flex items-start gap-3">
+                        <AlertTriangle size={22} className="text-red-600 shrink-0 mt-0.5" />
+                        <div className="flex-1">
+                            <p className="font-black text-red-800 uppercase tracking-tight">
+                                Sincronización bloqueada: códigos cortos duplicados
+                            </p>
+                            <p className="text-xs text-red-700 mt-1">
+                                Estos códigos los usan 2 o más prendas distintas. Si se envían así, la tienda
+                                online cruza su información. Repara los códigos antes de sincronizar o exportar.
+                            </p>
+                            <ul className="mt-3 space-y-2">
+                                {duplicadosLocales.map(g => (
+                                    <li key={g.codigo} className="bg-white/70 border border-red-200 rounded-lg px-3 py-2">
+                                        <p className="font-mono font-black text-red-700 text-sm">Código {g.codigo}</p>
+                                        <ul className="mt-1 space-y-0.5">
+                                            {g.filas.map((f, i) => (
+                                                <li key={i} className="text-xs text-red-800">
+                                                    • <span className="font-bold">{f.nombre}</span>
+                                                    {f.talla ? ` · Talla ${f.talla}` : ''}
+                                                    {f.color ? ` · ${f.color}` : ''}
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </li>
+                                ))}
+                            </ul>
+                            <button onClick={handleRepararDuplicados} disabled={reparandoDuplicados}
+                                className="mt-3 flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold bg-red-600 text-white hover:bg-red-700 transition-all disabled:opacity-60">
+                                {reparandoDuplicados ? <Loader2 size={16} className="animate-spin" /> : <Wrench size={16} />}
+                                {reparandoDuplicados ? 'Reparando…' : '🔧 Reparar códigos duplicados ahora'}
+                            </button>
+                            <p className="text-[11px] text-red-500 font-semibold mt-2">
+                                Conserva el código en la prenda más antigua de cada grupo y asigna códigos nuevos a las demás.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Resultado de la reparación de duplicados */}
+            {reparacionDuplicados && reparacionDuplicados.length > 0 && (
+                <div className="mb-4 bg-green-50 border border-green-300 rounded-xl p-4 fade-in">
+                    <div className="flex items-start gap-3">
+                        <CheckCircle size={20} className="text-green-600 shrink-0 mt-0.5" />
+                        <div className="flex-1">
+                            <p className="font-black text-green-800 uppercase tracking-tight">
+                                Códigos reparados ✓
+                            </p>
+                            <ul className="mt-2 space-y-1">
+                                {reparacionDuplicados.map(r => (
+                                    <li key={r.id} className="text-xs text-green-800">
+                                        <span className="font-bold">{r.name}</span>:{' '}
+                                        <span className="font-mono line-through text-red-500">{r.codigoAnterior}</span>
+                                        {' → '}
+                                        <span className="font-mono font-black">{r.codigoNuevo}</span>
+                                    </li>
+                                ))}
+                            </ul>
+                            <p className="text-[11px] text-green-700 font-semibold mt-2">
+                                Vuelve a presionar "Sincronizar ahora" para subir los códigos corregidos a la tienda.
+                            </p>
+                        </div>
+                        <button onClick={() => setReparacionDuplicados(null)}
+                            className="text-green-500 hover:text-green-700 shrink-0">
+                            <X size={16} />
+                        </button>
+                    </div>
                 </div>
             )}
 
@@ -418,6 +551,58 @@ export default function Sync() {
                 {/* Resultado de la última sincronización */}
                 {resultadoDirecta && (
                     <div className="mt-4 fade-in">
+                        {/* Advertencias ROJAS de la API: duplicados y cruces de nombre */}
+                        {resultadoDirecta.duplicados.length > 0 && (
+                            <div className="mb-3 flex items-start gap-2 bg-red-50 border-2 border-red-400 rounded-xl px-3 py-2.5">
+                                <AlertTriangle size={16} className="text-red-600 shrink-0 mt-0.5" />
+                                <div className="text-xs text-red-800">
+                                    <p className="font-black uppercase mb-1">
+                                        ⚠ {resultadoDirecta.duplicados.length} código(s) duplicado(s) detectado(s) por la tienda
+                                    </p>
+                                    <ul className="space-y-0.5 list-disc list-inside">
+                                        {resultadoDirecta.duplicados.slice(0, 20).map((d, i) => (
+                                            <li key={i}>
+                                                <span className="font-mono font-bold">{d.codigo}</span>{' '}
+                                                — <span className="font-bold">{d.nombre}</span>
+                                                {d.talla ? ` · Talla ${d.talla}` : ''}{d.color ? ` · ${d.color}` : ''}
+                                                {d.aviso ? ` · ${d.aviso}` : ''}
+                                            </li>
+                                        ))}
+                                        {resultadoDirecta.duplicados.length > 20 && <li>…y {resultadoDirecta.duplicados.length - 20} más</li>}
+                                    </ul>
+                                    <p className="mt-1 font-semibold">
+                                        Repara los códigos con "🔧 Reparar códigos duplicados" y vuelve a sincronizar.
+                                    </p>
+                                </div>
+                            </div>
+                        )}
+
+                        {resultadoDirecta.cruces.length > 0 && (
+                            <div className="mb-3 flex items-start gap-2 bg-red-50 border-2 border-red-400 rounded-xl px-3 py-2.5">
+                                <AlertTriangle size={16} className="text-red-600 shrink-0 mt-0.5" />
+                                <div className="text-xs text-red-800">
+                                    <p className="font-black uppercase mb-1">
+                                        ⚠ {resultadoDirecta.cruces.length} cruce(s) de información entre POS y tienda
+                                    </p>
+                                    <p className="mb-1">
+                                        El nombre de estas prendas en la nube NO coincide con el del POS (restos de un
+                                        código duplicado anterior). Son candidatas a borrar en el admin web y re-sincronizar.
+                                    </p>
+                                    <ul className="space-y-0.5 list-disc list-inside">
+                                        {resultadoDirecta.cruces.slice(0, 20).map((c, i) => (
+                                            <li key={i}>
+                                                <span className="font-mono font-bold">{c.codigo}</span>{' '}
+                                                — <span className="font-bold">{c.nombre}</span>
+                                                {c.talla ? ` · Talla ${c.talla}` : ''}{c.color ? ` · ${c.color}` : ''}
+                                                {c.aviso ? ` · ${c.aviso}` : ''}
+                                            </li>
+                                        ))}
+                                        {resultadoDirecta.cruces.length > 20 && <li>…y {resultadoDirecta.cruces.length - 20} más</li>}
+                                    </ul>
+                                </div>
+                            </div>
+                        )}
+
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
                             {[
                                 { label: 'Prendas nuevas creadas en la web', value: resultadoDirecta.creadas },

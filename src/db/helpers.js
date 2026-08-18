@@ -1,5 +1,6 @@
 import { db } from './schema';
 import { filterClosureMovements } from '../utils/closureMovements';
+import { agruparDuplicadosProductos, planificarReasignacionDuplicados } from '../utils/duplicateShortCodes';
 
 // ==============================================================================
 // 🔧 HELPERS — Funciones utilitarias de base de datos
@@ -98,6 +99,43 @@ export async function shortCodeExists(shortCode) {
     if (p) return true;
     const u = await db.barcodes.where('shortCode').equals(shortCode).first();
     return !!u;
+}
+
+/**
+ * Detecta shortCodes duplicados dentro de la tabla products (bug de las dos
+ * pestañas: el código se pre-genera al abrir el formulario y ambas lo guardan).
+ * Incluye productos archivados: un duplicado archivado puede reactivarse.
+ *
+ * La agrupación es lógica pura (utils/duplicateShortCodes); aquí solo se lee la BD.
+ *
+ * @returns {Promise<Array<{ shortCode: string, products: Array<{id, name, size, color, active}> }>>}
+ */
+export async function findDuplicateProductShortCodes() {
+    const products = await db.products.toArray();
+    return agruparDuplicadosProductos(products);
+}
+
+/**
+ * Repara los shortCodes duplicados en products: por cada grupo, CONSERVA el
+ * código en el producto de menor id (el más antiguo) y reasigna códigos nuevos
+ * a los demás (max+1 con padStart(5,'0'), mismo criterio de generateShortCode,
+ * considerando products ∪ barcodes). Todo en UNA transacción: si algo falla a
+ * mitad, Dexie hace rollback completo y nunca quedan reasignaciones parciales.
+ *
+ * @returns {Promise<Array<{ id, name, codigoAnterior, codigoNuevo }>>} Reasignaciones hechas
+ */
+export async function fixDuplicateProductShortCodes() {
+    return db.transaction('rw', db.products, db.barcodes, async () => {
+        const [products, barcodes] = await Promise.all([
+            db.products.toArray(),
+            db.barcodes.toArray(),
+        ]);
+        const reasignaciones = planificarReasignacionDuplicados(products, barcodes);
+        for (const r of reasignaciones) {
+            await db.products.update(r.id, { shortCode: r.codigoNuevo });
+        }
+        return reasignaciones;
+    });
 }
 
 /**
