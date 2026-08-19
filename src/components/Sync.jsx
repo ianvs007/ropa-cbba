@@ -235,6 +235,25 @@ export default function Sync() {
         }
     };
 
+    const aplicarVentasApiEnLocal = async (ventasApi = []) => {
+        const { ventas, errores } = ventasDesdeApi(ventasApi);
+        const [productosFrescos, ultima] = await Promise.all([
+            db.products.toArray(),
+            db.settings.get('ultimaImportacionVentas'),
+        ]);
+        const cruzadas = cruzarVentas(ventas, productosFrescos, ultima?.value || null);
+        const { unidades } = await aplicarVentas(cruzadas);
+        const aplicables = cruzadas.filter(f => f.aDescontar > 0);
+
+        return {
+            ventasRecibidas: ventas.length,
+            ventasAplicadas: aplicables.length,
+            unidades,
+            avisosVentas: cruzadas.filter(f => f.aviso).length,
+            erroresVentas: errores,
+        };
+    };
+
     const handleSincronizarAhora = async () => {
         const base = (syncUrlSetting?.value || URL_TIENDA_DEFAULT).replace(/\/+$/, '');
         const token = syncTokenSetting?.value;
@@ -247,7 +266,46 @@ export default function Sync() {
         setResultadoDirecta(null);
         setProgresoDirecta(null);
         try {
-            // a) Armar las filas de stock (solo activos con código corto)
+            const headers = {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            };
+
+            // a) Intentar protocolo robusto en 2 fases (start/commit).
+            // Si la nube aún no lo tiene, se hace fallback transparente al flujo legacy.
+            let usaCommit = false;
+            let cutoff = null;
+            let ventasPreviasStats = {
+                ventasRecibidas: 0, ventasAplicadas: 0, unidades: 0, avisosVentas: 0, erroresVentas: [],
+            };
+            try {
+                const startResp = await fetch(`${base}/api/sync/start`, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({}),
+                });
+                if (startResp.ok) {
+                    const startData = await startResp.json();
+                    cutoff = startData?.cutoff || null;
+                    const ventasPrevias = Array.isArray(startData?.ventasPendientesHastaCutoff)
+                        ? startData.ventasPendientesHastaCutoff
+                        : (Array.isArray(startData?.ventas) ? startData.ventas : []);
+                    ventasPreviasStats = await aplicarVentasApiEnLocal(ventasPrevias);
+                    usaCommit = Boolean(cutoff);
+                } else if (![404, 405].includes(startResp.status)) {
+                    if (startResp.status === 401) throw new Error('Token inválido: revísalo en el admin web → Ajustes.');
+                    if (startResp.status === 503) throw new Error('La tienda aún no tiene token configurado (admin web → Ajustes).');
+                    const data = await startResp.json().catch(() => null);
+                    throw new Error(data?.error || `No se pudo iniciar la sincronización (${startResp.status}).`);
+                }
+            } catch (err) {
+                if (String(err?.message || '').includes('Token inválido') || String(err?.message || '').includes('tienda aún no tiene token')) {
+                    throw err;
+                }
+                usaCommit = false;
+            }
+
+            // b) Armar snapshot de stock DESPUÉS de aplicar ventas pendientes iniciales.
             const todos = await db.products.toArray();
             const { filas: filasStock, sinCodigo } = filasStockParaExportar(todos);
             if (filasStock.length === 0) {
@@ -273,31 +331,22 @@ export default function Sync() {
             // web, la tienda la CREA en el mismo clic (carga inicial incluida).
             const filas = filasStock.map(({ codigo, nombre, talla, color, stock, precio }) => ({ codigo, nombre, talla, color, stock, precio }));
 
-            // b) POST a la API en LOTES de 250 para mostrar el avance en %.
-            // Solo el último lote va con finalizar: true (la tienda recién ahí
-            // cierra la ventana de ventas y las devuelve). Reintentar tras un
-            // fallo es seguro: lo ya creado/ajustado se recalcula igual.
-            const TAM_LOTE = 250;
             let creadas = 0, actualizadas = 0, advertencias = 0;
             const detalleAvisos = [];
             const duplicadosApi = [];  // códigos repetidos detectados por la nube
             const crucesApi = [];      // prendas cuyo nombre en la nube difiere del POS
             let ventasApi = [];
             setProgresoDirecta({ hechas: 0, total: filas.length });
-            for (let i = 0; i < filas.length; i += TAM_LOTE) {
-                const esUltimo = i + TAM_LOTE >= filas.length;
+            if (usaCommit) {
                 let resp;
                 try {
-                    resp = await fetch(`${base}/api/sync`, {
+                    resp = await fetch(`${base}/api/sync/commit`, {
                         method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${token}`,
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({ filas: filas.slice(i, i + TAM_LOTE), finalizar: esUltimo }),
+                        headers,
+                        body: JSON.stringify({ cutoff, filas, finalizar: true }),
                     });
                 } catch {
-                    throw new Error('Sin internet o la tienda está caída. Revisa tu conexión y vuelve a presionar "Sincronizar ahora": continuará sin duplicar nada.');
+                    throw new Error('Sin internet o la tienda está caída. Revisa tu conexión y vuelve a presionar "Sincronizar ahora".');
                 }
                 if (resp.status === 401) throw new Error('Token inválido: revísalo en el admin web → Ajustes.');
                 if (resp.status === 503) throw new Error('La tienda aún no tiene token configurado (admin web → Ajustes).');
@@ -305,7 +354,7 @@ export default function Sync() {
                     const data400 = await resp.json().catch(() => null);
                     throw new Error(`La tienda rechazó las filas: ${data400?.error || 'datos inválidos'}.`);
                 }
-                if (!resp.ok) throw new Error(`La tienda respondió con error ${resp.status}. Vuelve a presionar "Sincronizar ahora": continuará sin duplicar nada.`);
+                if (!resp.ok) throw new Error(`La tienda respondió con error ${resp.status}.`);
                 const data = await resp.json();
                 creadas += data.creadas ?? 0;
                 actualizadas += data.actualizadas ?? 0;
@@ -313,26 +362,54 @@ export default function Sync() {
                 if (Array.isArray(data.detalle)) detalleAvisos.push(...data.detalle.filter(d => d.aviso));
                 if (Array.isArray(data.duplicados)) duplicadosApi.push(...data.duplicados);
                 if (Array.isArray(data.cruces)) crucesApi.push(...data.cruces);
-                if (esUltimo) ventasApi = data.ventas || [];
-                setProgresoDirecta({ hechas: Math.min(i + TAM_LOTE, filas.length), total: filas.length });
+                ventasApi = data.ventasPostCutoff || data.ventas || [];
+                setProgresoDirecta({ hechas: filas.length, total: filas.length });
+            } else {
+                // Fallback legacy: POST en lotes al endpoint clásico.
+                const TAM_LOTE = 250;
+                for (let i = 0; i < filas.length; i += TAM_LOTE) {
+                    const esUltimo = i + TAM_LOTE >= filas.length;
+                    let resp;
+                    try {
+                        resp = await fetch(`${base}/api/sync`, {
+                            method: 'POST',
+                            headers,
+                            body: JSON.stringify({ filas: filas.slice(i, i + TAM_LOTE), finalizar: esUltimo }),
+                        });
+                    } catch {
+                        throw new Error('Sin internet o la tienda está caída. Revisa tu conexión y vuelve a presionar "Sincronizar ahora": continuará sin duplicar nada.');
+                    }
+                    if (resp.status === 401) throw new Error('Token inválido: revísalo en el admin web → Ajustes.');
+                    if (resp.status === 503) throw new Error('La tienda aún no tiene token configurado (admin web → Ajustes).');
+                    if (resp.status === 400) {
+                        const data400 = await resp.json().catch(() => null);
+                        throw new Error(`La tienda rechazó las filas: ${data400?.error || 'datos inválidos'}.`);
+                    }
+                    if (!resp.ok) throw new Error(`La tienda respondió con error ${resp.status}. Vuelve a presionar "Sincronizar ahora": continuará sin duplicar nada.`);
+                    const data = await resp.json();
+                    creadas += data.creadas ?? 0;
+                    actualizadas += data.actualizadas ?? 0;
+                    advertencias += (data.advertencias ?? 0) + (Array.isArray(data.avisosImportacion) ? data.avisosImportacion.length : 0);
+                    if (Array.isArray(data.detalle)) detalleAvisos.push(...data.detalle.filter(d => d.aviso));
+                    if (Array.isArray(data.duplicados)) duplicadosApi.push(...data.duplicados);
+                    if (Array.isArray(data.cruces)) crucesApi.push(...data.cruces);
+                    if (esUltimo) ventasApi = data.ventas || [];
+                    setProgresoDirecta({ hechas: Math.min(i + TAM_LOTE, filas.length), total: filas.length });
+                }
             }
 
-            // c) Aplicar las ventas devueltas con la MISMA lógica de la tarjeta ②.
-            // El guard `ultimaImportacionVentas` (que actualiza `aplicarVentas`)
-            // evita el doble descuento si se reintenta tras un fallo a mitad de camino.
-            const { ventas, errores } = ventasDesdeApi(ventasApi);
-            const [productosFrescos, ultima] = await Promise.all([
-                db.products.toArray(),
-                db.settings.get('ultimaImportacionVentas'),
-            ]);
-            const cruzadas = cruzarVentas(ventas, productosFrescos, ultima?.value || null);
-            const { unidades } = await aplicarVentas(cruzadas);
+            // c) Aplicar ventas recibidas al final de la sincronización.
+            const ventasPosterioresStats = await aplicarVentasApiEnLocal(ventasApi);
+            const erroresVentas = [...ventasPreviasStats.erroresVentas, ...ventasPosterioresStats.erroresVentas];
+            const ventasRecibidas = ventasPreviasStats.ventasRecibidas + ventasPosterioresStats.ventasRecibidas;
+            const ventasAplicadas = ventasPreviasStats.ventasAplicadas + ventasPosterioresStats.ventasAplicadas;
+            const unidades = ventasPreviasStats.unidades + ventasPosterioresStats.unidades;
+            const avisosVentas = ventasPreviasStats.avisosVentas + ventasPosterioresStats.avisosVentas;
 
             // d) Persistir la fecha de la última sync directa exitosa
             const fechaSync = getLocalISOString();
             await db.settings.put({ key: 'ultimaSyncDirecta', value: fechaSync });
 
-            const aplicables = cruzadas.filter(f => f.aDescontar > 0);
             setResultadoDirecta({
                 creadas,
                 actualizadas,
@@ -341,11 +418,11 @@ export default function Sync() {
                 duplicados: duplicadosApi,
                 cruces: crucesApi,
                 omitidos: sinCodigo.length,
-                ventasRecibidas: ventas.length,
-                ventasAplicadas: aplicables.length,
+                ventasRecibidas,
+                ventasAplicadas,
                 unidades,
-                avisosVentas: cruzadas.filter(f => f.aviso).length,
-                erroresVentas: errores,
+                avisosVentas,
+                erroresVentas,
             });
             showMsg('success',
                 `✓ Sincronizado: ${creadas ? `${creadas} prendas nuevas creadas en la web · ` : ''}` +
@@ -582,11 +659,11 @@ export default function Sync() {
                                 <AlertTriangle size={16} className="text-red-600 shrink-0 mt-0.5" />
                                 <div className="text-xs text-red-800">
                                     <p className="font-black uppercase mb-1">
-                                        ⚠ {resultadoDirecta.cruces.length} cruce(s) de información entre POS y tienda
+                                        ⚠ {resultadoDirecta.cruces.length} cruce(s) corregido(s) por autoridad POS
                                     </p>
                                     <p className="mb-1">
-                                        El nombre de estas prendas en la nube NO coincide con el del POS (restos de un
-                                        código duplicado anterior). Son candidatas a borrar en el admin web y re-sincronizar.
+                                        Se detectó historial inconsistente en la nube para esos códigos. Esta sincronización
+                                        ya aplicó la corrección tomando el POS como fuente oficial.
                                     </p>
                                     <ul className="space-y-0.5 list-disc list-inside">
                                         {resultadoDirecta.cruces.slice(0, 20).map((c, i) => (
