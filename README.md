@@ -1,16 +1,47 @@
-# React + Vite
+# Tienda de Ropas
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Sistema de gestión de tienda de ropas con funcionalidades de inventario, códigos de barras, reportes y cierre de caja.
 
-Currently, two official plugins are available:
+## Características
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- Gestión de productos y stock.
+- Asignación y seguimiento de códigos de barras.
+- Reportes mensuales y cierre de caja.
+- Sistema de roles y permisos.
+- Exportación a Excel y generación de PDF.
+- Almacenamiento local mediante IndexedDB (Dexie).
 
-## React Compiler
+## Tecnologías
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- React 19
+- Vite
+- Tailwind CSS
+- Recharts
+- Dexie
+- JsBarcode
+- jsPDF
+- XLSX
+- TensorFlow.js (en evaluación)
 
-## Expanding the ESLint configuration
+## Documentación
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Para ver el avance del sistema, consulta [docs/avance.md](docs/avance.md).
+
+## Scripts disponibles
+
+- `npm run dev` – Inicia el servidor de desarrollo.
+- `npm run build` – Compila la aplicación para producción.
+- `npm run lint` – Ejecuta ESLint.
+- `npm run test` – Ejecuta las pruebas con Vitest.
+- `npm run format` – Formatea el código con Prettier.
+
+## Instalación
+
+```bash
+npm install
+npm run dev
+```
+
+## Licencia
+
+Este proyecto es de uso interno.
