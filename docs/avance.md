@@ -41,4 +41,12 @@ El sistema de tienda de ropas se encuentra en desarrollo activo. A continuación
 
 ---
 
+## Conclusión
+
+El sistema ha alcanzado un nivel funcional básico que cubre las operaciones principales de una tienda de ropas: gestión de productos, códigos de barras, reportes y cierre de caja. La arquitectura basada en almacenamiento local (IndexedDB) permite que la aplicación funcione sin servidor, lo que facilita su despliegue y uso en entornos con conectividad limitada.
+
+Quedan pendientes mejoras importantes como la integración completa de TensorFlow.js para reconocimiento de imágenes, la sincronización con la tienda online y la ampliación de pruebas automatizadas. Estas mejoras incrementarán la robustez y las capacidades del sistema, acercándolo a un producto listo para producción.
+
+---
+
 *Última actualización: 2026-08-20*
