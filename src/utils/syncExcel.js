@@ -121,8 +121,9 @@ export function parsearVentasEnLinea(jsonRows = []) {
             if (campo && campos[campo] === undefined) campos[campo] = value;
         }
 
+        const globalId = String(campos.globalId ?? '').trim();
         const codigo = String(campos.codigo ?? '').trim();
-        if (!codigo) {
+        if (!globalId && !codigo) {
             errores.push(`Fila ${numFila}: código vacío`);
             return;
         }
@@ -134,6 +135,7 @@ export function parsearVentasEnLinea(jsonRows = []) {
         }
 
         ventas.push({
+            globalId: globalId || null,
             codigo,
             nombre: String(campos.nombre ?? '').trim(),
             talla: String(campos.talla ?? '').trim(),
@@ -218,14 +220,18 @@ export function ventasDesdeApi(ventasApi = []) {
  * @returns {Array} Filas de vista previa {…venta, productId, nombreLocal, stockActual, aDescontar, aviso}
  */
 export function cruzarVentas(ventas = [], products = [], ultimaImportacion = null) {
+    const porGlobalId = new Map();
     const porCodigo = new Map();
     for (const p of products || []) {
+        const globalId = String(p?.globalId ?? '').trim();
+        if (globalId && !porGlobalId.has(globalId)) porGlobalId.set(globalId, p);
         const codigo = String(p?.shortCode ?? '').trim();
         if (codigo && !porCodigo.has(codigo)) porCodigo.set(codigo, p);
     }
 
     return (ventas || []).map(venta => {
-        const producto = porCodigo.get(venta.codigo) || null;
+        // Buscar primero por globalId, luego por codigo (fallback)
+        const producto = (venta.globalId && porGlobalId.get(venta.globalId)) || porCodigo.get(venta.codigo) || null;
         const stockActual = producto
             ? Math.max(0, Math.floor(Number(producto.stock) || 0))
             : null;

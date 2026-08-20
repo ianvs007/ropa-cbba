@@ -43,7 +43,10 @@ export async function aplicarVentas(preview = []) {
                 if (qty <= 0) continue;
 
                 const nuevoStock = product.stock - qty;
-                await db.products.update(product.id, { stock: nuevoStock });
+                await db.products.update(product.id, {
+                    stock: nuevoStock,
+                    updatedAt: new Date().toISOString(),
+                });
 
                 // Marcar como usadas las primeras `qty` unidades disponibles (FIFO por id)
                 const unidadesLibres = await db.barcodes
