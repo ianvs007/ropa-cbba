@@ -24,7 +24,7 @@ import { hasPermission, PERMISSIONS } from '../utils/permissions';
 const NAV_ADMIN = [
     { label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
     { label: 'Reporte Mensual', path: '/monthly-report', icon: Calendar },
-    { label: 'Historial de ventas y gastos', path: '/sales', icon: ClipboardList },
+    { label: 'Historial de Caja', path: '/sales', icon: ClipboardList },
     { label: 'Productos', path: '/products', icon: Package, perm: PERMISSIONS.EDIT_PRODUCTS },
     { label: 'Catálogo Base', path: '/product-options', icon: ListTree, perm: PERMISSIONS.EDIT_PRODUCTS },
     { label: 'Etiquetado Masivo', path: '/mass-labeling', icon: Tag, perm: PERMISSIONS.EDIT_PRODUCTS },
@@ -40,7 +40,7 @@ const NAV_ADMIN = [
 const NAV_SELLER = [
     { label: 'Punto de Venta', path: '/pos', icon: ShoppingCart },
     { label: 'Reservas', path: '/reservations', icon: Tag },
-    { label: 'Historial de ventas y gastos', path: '/sales', icon: ClipboardList },
+    { label: 'Historial de Caja', path: '/sales', icon: ClipboardList },
     { label: 'Gastos', path: '/expenses', icon: Receipt },
     { label: 'Abrir/Cerrar Caja', path: '/cash', icon: DollarSign },
 ];

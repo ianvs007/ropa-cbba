@@ -466,3 +466,94 @@ export const printMonthlyReportGlobal = async (data, currency = 'Bs.') => {
     const pdfUrl = URL.createObjectURL(pdfBlob);
     window.open(pdfUrl, '_blank');
 };
+
+/**
+ * Imprime un informe de historial de cierres de caja (uno o varios registros).
+ * @param {Array} closures - Array de objetos cashClosures.
+ * @param {string} currency - Símbolo de moneda.
+ */
+export const printCashClosuresReport = async (closures, currency = 'Bs.') => {
+    if (!closures || closures.length === 0) return;
+    const settingsArr = await db.settings.toArray();
+    const settings = {};
+    settingsArr.forEach(s => settings[s.key] = s.value);
+
+    const doc = new jsPDF({ orientation: 'p', unit: 'mm', format: 'letter' });
+    let y = drawPDFHeader(doc, settings, 'Informe de Cierres de Caja');
+    const pageWidth = doc.internal.pageSize.width;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.text(`Total de cierres: ${closures.length}`, 20, y); y += 8;
+
+    closures.forEach((c) => {
+        if (y > 250) {
+            doc.addPage();
+            y = 20;
+        }
+
+        doc.setDrawColor(200, 200, 200);
+        doc.line(20, y, pageWidth - 20, y); y += 4;
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(10);
+        doc.setTextColor(0, 0, 0);
+        doc.text(`Cierre #${c.id} — ${c.closedBy || c.username || 'N/A'}`, 20, y); y += 5;
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.text(`Fecha: ${new Date(c.date + 'T12:00:00').toLocaleDateString('es')}  |  Cerrado: ${c.closedAt ? new Date(c.closedAt).toLocaleString('es') : '-'}`, 20, y); y += 5;
+        if (c.retroactive) {
+            doc.setTextColor(230, 100, 0);
+            doc.text('⚠ CIERRE RETROACTIVO', 20, y); y += 4;
+            doc.setTextColor(0, 0, 0);
+        }
+        y += 2;
+
+        const leftCol = 25;
+        const rightCol = pageWidth - 30;
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        const rows = [
+            ['Efectivo Inicial:', formatCurrency(c.cashStart, currency)],
+            ['Efectivo en Caja (Cierre):', formatCurrency(c.cashOnHand, currency)],
+            ['Ventas Totales:', formatCurrency(c.totalSales, currency)],
+            ['Gastos Totales:', formatCurrency(c.totalExpenses, currency)],
+            ['Ingreso Neto:', formatCurrency(c.netIncome, currency)],
+            ['Efectivo Esperado:', formatCurrency((c.totalCashIn || 0) - (c.cashExpenses || 0), currency)],
+            ['Diferencia de Arqueo:', `${(c.cashDifference || 0) >= 0 ? '+' : ''}${formatCurrency(c.cashDifference, currency)}`],
+            ['Ventas Efectivo:', formatCurrency(c.cashSales, currency)],
+            ['Ventas QR/Banco:', formatCurrency(c.qrSales, currency)],
+            ['Abonos Efectivo:', formatCurrency(c.cashReservations, currency)],
+            ['Abonos QR/Banco:', formatCurrency(c.qrReservations, currency)],
+            ['Transacciones:', `${c.transactionCount || 0}`],
+            ['Prendas Vendidas:', `${c.itemsSold || 0}`],
+        ];
+
+        rows.forEach(([label, value]) => {
+            doc.text(label, leftCol, y);
+            doc.text(value, rightCol, y, { align: 'right' });
+            y += 5;
+        });
+
+        if (c.notes) {
+            y += 2;
+            doc.setFont('helvetica', 'bold');
+            doc.text('Comentarios / Observaciones:', leftCol, y); y += 5;
+            doc.setFont('helvetica', 'normal');
+            const splitNotes = doc.splitTextToSize(c.notes, pageWidth - 50);
+            doc.text(splitNotes, leftCol, y);
+            y += (splitNotes.length * 4) + 4;
+        }
+
+        y += 4;
+    });
+
+    doc.setFontSize(9);
+    doc.text(`Generado el: ${new Date().toLocaleString()}`, pageWidth - 20, doc.internal.pageSize.height - 15, { align: 'right' });
+
+    doc.autoPrint();
+    const pdfBlob = doc.output('blob');
+    const pdfUrl = URL.createObjectURL(pdfBlob);
+    window.open(pdfUrl, '_blank');
+};
