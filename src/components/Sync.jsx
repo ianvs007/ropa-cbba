@@ -271,7 +271,7 @@ export default function Sync() {
             }
             // Se envían también nombre y precio: si la prenda no existe en la
             // web, la tienda la CREA en el mismo clic (carga inicial incluida).
-            const filas = filasStock.map(({ codigo, nombre, talla, color, stock, precio }) => ({ codigo, nombre, talla, color, stock, precio }));
+            const filas = filasStock.map(({ globalId, codigo, nombre, talla, color, stock, precio }) => ({ globalId, codigo, nombre, talla, color, stock, precio }));
 
             // b) POST a la API en LOTES de 250 para mostrar el avance en %.
             // Solo el último lote va con finalizar: true (la tienda recién ahí
@@ -327,6 +327,18 @@ export default function Sync() {
             ]);
             const cruzadas = cruzarVentas(ventas, productosFrescos, ultima?.value || null);
             const { unidades } = await aplicarVentas(cruzadas);
+
+            // Actualizar updatedAt en productos modificados por ventas web
+            for (const fila of cruzadas) {
+                if (fila.aDescontar > 0) {
+                    const product = await db.products.get(fila.productId);
+                    if (product) {
+                        await db.products.update(product.id, {
+                            updatedAt: new Date().toISOString(),
+                        });
+                    }
+                }
+            }
 
             // d) Persistir la fecha de la última sync directa exitosa
             const fechaSync = getLocalISOString();

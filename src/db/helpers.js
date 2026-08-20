@@ -84,13 +84,18 @@ export async function generateShortCode() {
     const validCodes = [...productCodes, ...unitCodes]
         .filter(n => !isNaN(n) && n > 0 && n <= 99999);
 
-    if (validCodes.length === 0) return '00001';
+    if (validCodes.length === 0) {
+        return { shortCode: '00001', globalId: crypto.randomUUID() };
+    }
 
     const maxCode = Math.max(...validCodes);
     const newCode = maxCode + 1;
     if (newCode > 99999) throw new Error('Se ha alcanzado el límite de 99,999 códigos cortos');
 
-    return newCode.toString().padStart(5, '0');
+    return {
+        shortCode: newCode.toString().padStart(5, '0'),
+        globalId: crypto.randomUUID(),
+    };
 }
 
 /** Verifica si un código corto ya existe en productos o unidades */
@@ -304,7 +309,10 @@ export async function discountStock(items) {
             if (!product) throw new Error(`Producto ID ${item.productId} no encontrado`);
             if (product.stock < item.qty) throw new Error(`Stock insuficiente para "${product.name}"`);
 
-            await db.products.update(item.productId, { stock: product.stock - item.qty });
+            await db.products.update(item.productId, {
+                stock: product.stock - item.qty,
+                updatedAt: new Date().toISOString(),
+            });
 
             const barcodesToUse = await db.barcodes
                 .where('productId').equals(item.productId)
@@ -357,13 +365,20 @@ export async function exportDatabase() {
         db.colors.toArray(),
     ]);
 
+    // Asegurar que cada producto tenga globalId y updatedAt
+    const productsWithGlobalId = products.map(p => ({
+        ...p,
+        globalId: p.globalId || crypto.randomUUID(),
+        updatedAt: p.updatedAt || p.createdAt || new Date().toISOString(),
+    }));
+
     const safeUsers = users.map(u => ({ ...u, password: '***' }));
 
     return {
-        version: 9,
+        version: 10,
         exportedAt: new Date().toISOString(),
         data: {
-            products, kardex, sales, expenseCategories, expenses,
+            products: productsWithGlobalId, kardex, sales, expenseCategories, expenses,
             users: safeUsers, settings: settingsRaw, reservations, reservationPayments,
             categories, productNames, productFields, barcodes, brands, colors,
         },
@@ -396,6 +411,12 @@ export async function importDatabase(backupObj) {
 
                 for (const product of data.products) {
                     const prodData = { ...product };
+                    if (!prodData.globalId) {
+                        prodData.globalId = crypto.randomUUID();
+                    }
+                    if (!prodData.updatedAt) {
+                        prodData.updatedAt = prodData.createdAt || new Date().toISOString();
+                    }
                     if (!prodData.shortCode) {
                         while (usedShortCodes.has(shortCodeCounter)) shortCodeCounter++;
                         prodData.shortCode = shortCodeCounter.toString().padStart(5, '0');
