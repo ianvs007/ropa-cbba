@@ -4,3 +4,4 @@ diagnostico_caja.json
 
 # Estado local del agente (Codewhale)
 .codewhale/
+.aider*
