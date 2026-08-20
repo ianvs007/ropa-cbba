@@ -21,7 +21,7 @@ sincronización manual vía Excel con la tienda virtual (pantalla `/sync`).
   se copia a mano a las 3 máquinas (no hacen git pull).
 - **Tests**: `npx vitest run` (entorno node, funciones puras — la lógica testeable
   se extrae a `src/utils/` o se exporta del hook). Toda la suite en verde +
-  `npm run build` antes de commitear. **184 tests** al 2026-07-27.
+  `npm run build` antes de commitear. **209 tests** al 2026-08-19.
 - **ESLint**: hay falsos positivos preexistentes (`Icon` en Layout/CashClose,
   vars sin usar); no arreglarlos de pasada — verificar con stash que no se
   agregan problemas nuevos.
@@ -152,6 +152,65 @@ build final `556177b`, zip **`ropa-cbba-v4-cliente-caja-20260709.zip`**
       `precio` para alimentar la importación inicial de catálogo en la nube
       (tarjeta ④ del admin web: crea las prendas que no existen, sin foto ni
       categoría, editables después). 185 tests en verde.
+
+## Registro de actualizaciones — Agosto 2026
+
+### ✅ En producción (main, 29/07 al 19/08/2026)
+
+11. **Sincronización directa con la tienda virtual por lotes** (`7ecb6dc`):
+    el POS ya no depende solo del Excel. El botón "Sincronizar ahora" (tarjeta ③
+    de `/sync`) hace POST a `/api/sync` en **lotes de 250 filas** con barra de
+    avance; solo el último lote va con `finalizar: true` (la nube recién ahí
+    cierra la ventana de ventas y las devuelve). Aplica las ventas web devueltas
+    con la MISMA lógica que la importación por Excel (`aplicarVentas`: UNA
+    transacción Dexie que descuenta `product.stock` + unidades FIFO + kardex;
+    no toca caja). Archivos: `Sync.jsx`, `syncExcel.js` (`ventasDesdeApi`,
+    `cruzarVentas`), `syncAplicar.js`; tests `syncExcel.test.js`.
+
+12. **Fix cierres retroactivos incerrables** (`3bc6be3`, 04/08/2026): evita
+    días pendientes que no se podían cerrar y añade herramientas de
+    diagnóstico/regularización (`regularizar-cierres-masivo.js`,
+    `diagnostico-caja.js`, `analizar-diagnostico.cjs`, `INSTRUCCIONES.txt`).
+    Toca `CashClose.jsx`, `usePendingClosureDates.js`, `Users.jsx`, `Layout.jsx`.
+
+13. **Fix de shortCodes duplicados — causa raíz del cruce POS↔nube**
+    (`cb20eab`, 18/08/2026): el shortCode se pre-generaba al abrir el formulario
+    (`generateShortCode` = max+1, sin transacción) y dos pestañas podían guardar
+    el mismo código, cruzando la información de prendas distintas en la tienda
+    virtual (`products.codigo = shortCode`). Ahora:
+    - `src/utils/duplicateShortCodes.js` + `findDuplicateProductShortCodes` /
+      `fixDuplicateProductShortCodes` en `db/helpers.js` (conserva el código en
+      la prenda más antigua, reasigna las demás, UNA transacción).
+    - La sync directa y la exportación Excel se **BLOQUEAN** si hay duplicados
+      (panel rojo + botón "Reparar códigos duplicados").
+    - `ProductForm` re-verifica unicidad al guardar (regenera si hay carrera).
+    - 18 tests nuevos (`duplicateShortCodes.test.js`).
+
+14. **Pestaña "Cierres de Caja" en el Historial de Caja (solo admin)**
+    (`62c4a86`, `0e22a67`, 19/08/2026): el módulo `/sales` se renombró a
+    "Historial de Caja" y ganó una pestaña "Cierres de Caja" visible solo para
+    `admin`: lista los `cashClosures` con filtros (fecha, vendedor, búsqueda),
+    indicador visual de diferencia (excedente/faltante/cuadrado) y exportación
+    PDF individual y masiva (`printCashClosuresReport` en `utils.js`). Archivos:
+    `SalesHistory.jsx`, `Layout.jsx`, `utils.js` + `REGISTRO_CAMBIOS_CIERRES_CAJA.md`.
+
+### 🔧 Diagnóstico y herramientas (19/08/2026, sin commitear)
+
+15. **Diagnóstico del cruce de códigos POS↔nube** — se identificó por qué algunas
+    prendas "no se guardan" en la tienda virtual: la nube cruza por `codigo` y
+    compara el `nombre`; si difieren (`nubeDifiere` en `functions/lib/sincronizar.js`)
+    marca `cruce: true` y **NO actualiza el stock**, y nunca se reconcilia solo
+    (la nube jamás actualiza `products.nombre`). Causas: (a) shortCodes duplicados
+    o reasignados en el POS (fix item 13), (b) el código se reutiliza al borrar+
+    reimportar (el UNIQUE de la nube se libera), (c) renombrar una prenda en el
+    POS después de que ya está en la nube. Evidencia en D1: `00075` ("CONJT DEPORT
+    2PZ" → "BODY") y `02253` ("CHAMARRA" → "BLAISER VESTIDO").
+    - **Comparador POS↔nube** (solo lectura, para listar las desincronizadas):
+      `comparar-pos-nube.cjs` (consulta D1 con wrangler y cruza contra el JSON del
+      POS) + `public/volcar-pos.html` (extrae los productos del IndexedDB del POS
+      desde `http://localhost:3001/volcar-pos.html`) + `volcar-pos.bat`. Reporta
+      duplicados, cruces, cruces por tilde, solo-POS, solo-nube, variante sin
+      coincidencia y coincidencias con diferencia de stock.
 
 ### 🔜 Posibles siguientes pasos (no comprometidos)
 
