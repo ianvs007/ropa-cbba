@@ -431,3 +431,43 @@ db.version(22).stores({
     securityLogs: '++id, timestamp, eventType, userId',
     cashOpenings: '++id, date, userId, openedAt',
 });
+
+// ==============================================================================
+// 🔐 ESQUEMA v23 — IDENTIFICADOR GLOBAL Y TIMESTAMP DE ACTUALIZACIÓN
+// ==============================================================================
+db.version(23).stores({
+    products: '++id, globalId, name, barcode, category, brand, size, color, stock, cost, price, shortCode, active, createdAt, updatedAt, hasEmbedding',
+    kardex: '++id, productId, date, type',
+    sales: '++id, date, total, sellerId, paymentMethod, status, shiftId',
+    expenseCategories: '++id, name',
+    expenses: '++id, date, categoryId, amount, paymentMethod, userId, registeredBy, shiftId',
+    users: '++id, username, role',
+    settings: 'key',
+    reservations: '++id, clientName, clientPhone, productId, status, createdAt, sellerId',
+    reservationPayments: '++id, reservationId, date, status, userId, shiftId',
+    categories: '++id, name',
+    productNames: '++id, name',
+    productFields: '++id, name, type',
+    barcodes: '++id, productId, barcode, shortCode, used, createdAt',
+    brands: '++id, name',
+    colors: '++id, name',
+    cashClosures: '++id, date, userId, closedAt, openingId',
+    cashClosureHistory: '++id, closureId, date, changedBy',
+    securityLogs: '++id, timestamp, eventType, userId',
+    cashOpenings: '++id, date, userId, openedAt',
+}).upgrade(async tx => {
+    // Asignar globalId y updatedAt a productos existentes que no los tengan
+    const products = await tx.products.toArray();
+    for (const p of products) {
+        const updates = {};
+        if (!p.globalId) {
+            updates.globalId = crypto.randomUUID();
+        }
+        if (!p.updatedAt) {
+            updates.updatedAt = p.createdAt || new Date().toISOString();
+        }
+        if (Object.keys(updates).length > 0) {
+            await tx.products.update(p.id, updates);
+        }
+    }
+});
