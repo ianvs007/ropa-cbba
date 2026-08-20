@@ -1,3 +1,6 @@
 node_modules/ 
 # Exportaciones de diagnóstico con datos reales del negocio — nunca versionar
 diagnostico_caja.json
+
+# Estado local del agente (Codewhale)
+.codewhale/
