@@ -33,12 +33,21 @@ describe('filasStockParaExportar', () => {
         const { filas } = filasStockParaExportar(products);
         expect(filas).toHaveLength(2);
         expect(filas[0]).toEqual({
-            codigo: '00001', nombre: 'Vestido Floral', talla: 'M', color: 'Rojo', stock: 5, precio: 150,
+            codigo: '00001', nombre: 'Vestido Floral', talla: 'M', color: 'Rojo', stock: 5, precio: 150, globalId: '',
         });
         // El stock decimal se sanea a entero
         expect(filas[1]).toEqual({
-            codigo: '00004', nombre: 'Falda Plisada', talla: 'L', color: 'Negro', stock: 2, precio: 89.9,
+            codigo: '00004', nombre: 'Falda Plisada', talla: 'L', color: 'Negro', stock: 2, precio: 89.9, globalId: '',
         });
+    });
+
+    it('incluye el globalId del producto para el cruce por identidad estable', () => {
+        const { filas } = filasStockParaExportar([
+            { shortCode: '00020', name: 'Con globalId', size: 'S', color: 'Rojo', stock: 1, price: 10, globalId: 'uuid-abc-123' },
+            { shortCode: '00021', name: 'Sin globalId', size: 'S', color: 'Rojo', stock: 1, price: 10 },
+        ]);
+        expect(filas[0].globalId).toBe('uuid-abc-123');
+        expect(filas[1].globalId).toBe('');
     });
 
     it('precio inválido o ausente se sanea a 0', () => {
@@ -76,6 +85,7 @@ describe('parsearVentasEnLinea', () => {
         const { ventas, errores } = parsearVentasEnLinea(rows);
         expect(errores).toHaveLength(0);
         expect(ventas).toEqual([{
+            globalId: null,
             codigo: '00001', nombre: 'Vestido Floral', talla: 'M', color: 'Rojo',
             cantidad: 2, precioUnit: 150, estado: 'pagado',
             pedido: 'AB12CD34', fecha: '2026-07-27 10:30:00',

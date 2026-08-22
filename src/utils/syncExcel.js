@@ -42,7 +42,7 @@ const ALIAS_COLUMNAS = {
  * sanea a entero ≥ 0 y el precio a número ≥ 0.
  *
  * @param {Array} products - Productos de la tabla `products`
- * @returns {{ filas: Array<{codigo, nombre, talla, color, stock, precio}>, sinCodigo: Array }}
+ * @returns {{ filas: Array<{codigo, nombre, talla, color, stock, precio, globalId}>, sinCodigo: Array }}
  *          `sinCodigo` trae los productos activos omitidos por falta de
  *          shortCode, para advertir al usuario.
  */
@@ -65,6 +65,7 @@ export function filasStockParaExportar(products = []) {
             color: p.color ?? '',
             stock: Math.max(0, Math.floor(Number(p.stock) || 0)),
             precio: Number.isFinite(precio) && precio >= 0 ? precio : 0,
+            globalId: String(p.globalId ?? '').trim(),
         });
     }
 
