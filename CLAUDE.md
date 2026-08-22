@@ -212,6 +212,20 @@ build final `556177b`, zip **`ropa-cbba-v4-cliente-caja-20260709.zip`**
       duplicados, cruces, cruces por tilde, solo-POS, solo-nube, variante sin
       coincidencia y coincidencias con diferencia de stock.
 
+16. **Comparador ejecutado — diagnóstico cerrado (21-22/08/2026)**: se volcaron
+    los 2408 productos del POS (IndexedDB, vía Chrome headless + CDP, sin
+    depender del `volcar-pos.bat` manual) y se cruzaron contra D1 (2410 códigos).
+    Resultado LIMPIO: 0 duplicados, 0 cruces de nombre, 0 cruces por tilde,
+    0 solo-POS, 0 variante sin coincidencia; 2408 coinciden con stock idéntico.
+    Los cruces históricos `00075` y `02253` ya no existen (resueltos).
+    - **Decisión de negocio (Alain, 22/08/2026)**: la nube (tienda virtual) es
+      DESCARTABLE; los datos canónicos viven en la BD del POS offline y la nube
+      SIEMPRE se re-sincroniza desde el POS. Los 2 huérfanos "solo en la nube"
+      (`02418` FALDA TABLEADO, `02818` VESTIDO VICTORIANO) NO requieren acción.
+    - **Validación visual**: pestaña "Cierres de Caja" (Historial de Caja, solo
+      admin) renderiza correctamente (columnas, buscador, estado vacío). Falta
+      solo confirmar con `cashClosures` reales del perfil de producción.
+
 ### 🔜 Posibles siguientes pasos (no comprometidos)
 
 - Vista admin de cierres retroactivos / abrir `/cash` a admins.
