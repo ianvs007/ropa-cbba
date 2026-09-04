@@ -264,14 +264,14 @@ Verificación en frío de ambos proyectos desde Qwen Code local:
   push volvió a funcionar).
 - BD viva (D1 remoto): columna `products.global_id` presente, backfill completo
   (2410/2410) e índice único parcial `idx_products_global_id` OK.
-- ⚠️ DRIFT de migraciones: el ledger `d1_migrations` remoto registra solo
-  001–004; la 005 se aplicó a mano sin registrar. NO correr
-  `wrangler d1 migrations apply tienda-virtual-db --remote` (re-aplicaría el
-  ALTER TABLE → duplicate column). Fix pendiente (solo insertar el registro;
-  decide Alain):
-  `npx wrangler d1 execute tienda-virtual-db --remote --command "INSERT INTO d1_migrations (name) VALUES ('005_global_id.sql');"`
-- ⚠️ DESPLIEGUE POS: no existe ningún zip con la versión globalId en
-  `D:\software\MisProyectos`; confirmar si las 3 máquinas ya la tienen (la sync
-  nueva lo requiere).
+- ✅ DRIFT de migraciones RESUELTO (04/09/2026): la 005 se había aplicado a
+  mano sin registrar en el ledger `d1_migrations` remoto (solo 001–004). Se
+  insertó el registro con aprobación de Alain y
+  `wrangler d1 migrations list --remote` vuelve a dar "No migrations to apply";
+  `migrations apply` es seguro de nuevo.
+- ⚠️ DESPLIEGUE POS: zip `ropa-cbba-v5-globalid-20260904.zip` armado en
+  `D:\software\MisProyectos` (1.36 MB, 138 entradas; dist con globalId, sin
+  node_modules/.git/.claude/backups ni basura de agentes). PENDIENTE: copiarlo
+  a mano a las 3 máquinas.
 - ⏸️ Pendiente visual: pestaña "Cierres de Caja" con `cashClosures` reales de
   producción.

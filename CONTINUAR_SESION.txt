@@ -38,18 +38,17 @@ QUÉ SE HIZO DESDE EL CORTE ANTERIOR (19/08)
 
 PENDIENTE / PRÓXIMOS PASOS
 --------------------------
-A. DRIFT de migraciones (nube): el ledger d1_migrations remoto registra solo
-   001–004; la 005 se aplicó a mano. NO ejecutar
-   `npx wrangler d1 migrations apply tienda-virtual-db --remote` (re-aplicaría
-   el ALTER TABLE → duplicate column). Fix (solo insertar el registro;
-   requiere aprobación de Alain):
-   npx wrangler d1 execute tienda-virtual-db --remote --command "INSERT INTO d1_migrations (name) VALUES ('005_global_id.sql');"
+A. ✅ HECHO (04/09/2026): el drift de migraciones de la nube está resuelto.
+   La 005 se había aplicado a mano sin registrar; se insertó el registro en
+   d1_migrations (INSERT aprobado por Alain) y `wrangler d1 migrations list
+   --remote` vuelve a dar "No migrations to apply". `migrations apply` es
+   seguro de nuevo.
 
-B. DESPLIEGUE POS: no existe ningún zip con la versión globalId en
-   D:\software\MisProyectos → las 3 máquinas probablemente siguen con la
-   versión previa, y la sync nueva por global_id necesita el POS actualizado.
-   Armar zip excluyendo node_modules, .git, .claude y backup_tienda_ropa_*.json
-   y copiarlo a mano a las 3 máquinas.
+B. DESPLIEGUE POS: zip `ropa-cbba-v5-globalid-20260904.zip` ARMADO en
+   D:\software\MisProyectos (1.36 MB, 138 entradas: dist con globalId, sin
+   node_modules/.git/.claude/backups ni basura de agentes). PENDIENTE: copiarlo
+   a mano a las 3 máquinas (la sync nueva por global_id necesita el POS
+   actualizado).
 
 C. VALIDACIÓN VISUAL: pestaña Cierres de Caja (Historial de Caja, solo admin)
    con cashClosures reales del perfil de producción.
