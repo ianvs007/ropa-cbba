@@ -21,7 +21,8 @@
 <body>
   <h1>Volcar productos del POS (solo lectura)</h1>
   <p class="muted">
-    Lee la base local del POS (<code>TiendaRopa_Database</code>) y exporta los productos a un
+    Lee la base local del POS (<code>TiendaRopa_Database</code>) y exporta los productos
+    Y las unidades (tabla barcodes, los códigos que van en las etiquetas físicas) a un
     archivo JSON para compararlos con la tienda virtual. No modifica nada.
   </p>
 
@@ -83,11 +84,13 @@
         log('Abriendo ' + DB_NAME + ' …');
         const db = await abrirDB();
         const productos = await leerStore(db, STORE);
+        const unidades = await leerStore(db, 'barcodes');
         db.close();
 
         const filas = (productos || []).map((p) => ({
           id: p.id ?? null,
           shortCode: String(p.shortCode ?? '').trim(),
+          globalId: String(p.globalId ?? '').trim(),
           name: p.name ?? '',
           size: p.size ?? '',
           color: p.color ?? '',
@@ -96,11 +99,21 @@
           price: Number(p.price) || 0,
         }));
 
+        const unidadesFilas = (unidades || []).map((u) => ({
+          id: u.id ?? null,
+          productId: u.productId ?? null,
+          barcode: String(u.barcode ?? '').trim(),
+          shortCode: String(u.shortCode ?? '').trim(),
+          used: u.used === true,
+        }));
+
         const payload = {
           generado_en: new Date().toISOString(),
           db: DB_NAME,
           total: filas.length,
+          totalUnidades: unidadesFilas.length,
           productos: filas,
+          unidades: unidadesFilas,
         };
 
         ultimoJSON = JSON.stringify(payload, null, 2);
@@ -109,7 +122,9 @@
           'OK · ' + filas.length + ' producto(s) leídos.\n' +
           'Con shortCode: ' + filas.filter((f) => f.shortCode).length + '\n' +
           'Activos: ' + filas.filter((f) => f.active).length + '\n' +
-          'Sin shortCode: ' + filas.filter((f) => !f.shortCode).length,
+          'Sin shortCode: ' + filas.filter((f) => !f.shortCode).length + '\n' +
+          'Unidades (etiquetas): ' + unidadesFilas.length +
+          ' (con shortCode: ' + unidadesFilas.filter((u) => u.shortCode).length + ')',
           'ok'
         );
         btnDescargar.disabled = false;
