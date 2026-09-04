@@ -1,10 +1,11 @@
 # CLAUDE.md — ropa-cbba (Tienda de Ropa)
 
 POS **offline** para tienda de ropa en Cochabamba: React 19 + Vite + Dexie.js
-(IndexedDB, schema **v22**) + Tailwind. Corre en 3 máquinas de producción como
+(IndexedDB, schema **v23**) + Tailwind. Corre en 3 máquinas de producción como
 ventana de navegador lanzada por `iniciar-servicio-silencioso.bat`; cada máquina
 tiene su propia base de datos local (sin servidor). Desde el 27/07/2026 existe
-sincronización manual vía Excel con la tienda virtual (pantalla `/sync`).
+sincronización manual vía Excel con la tienda virtual (pantalla `/sync`); desde
+el 22/08/2026 la identidad de cruce con la nube es el `globalId` (UUID estable).
 
 ## Convenciones de trabajo
 
@@ -21,7 +22,7 @@ sincronización manual vía Excel con la tienda virtual (pantalla `/sync`).
   se copia a mano a las 3 máquinas (no hacen git pull).
 - **Tests**: `npx vitest run` (entorno node, funciones puras — la lógica testeable
   se extrae a `src/utils/` o se exporta del hook). Toda la suite en verde +
-  `npm run build` antes de commitear. **209 tests** al 2026-08-19.
+  `npm run build` antes de commitear. **210 tests** al 2026-09-04.
 - **ESLint**: hay falsos positivos preexistentes (`Icon` en Layout/CashClose,
   vars sin usar); no arreglarlos de pasada — verificar con stash que no se
   agregan problemas nuevos.
@@ -232,3 +233,45 @@ build final `556177b`, zip **`ropa-cbba-v4-cliente-caja-20260709.zip`**
 - Bloqueo progresivo del POS con >N días pendientes (descartado por ahora).
 - Pasada de consistencia de `toLocaleDateString()` sin locale en
   Reservations/Expenses (solo visual, preexistente).
+
+### ✅ Sync por identidad estable — `globalId` (22/08/2026)
+
+17. **`globalId` como identidad de cruce con la nube** (`2c6896cc`, `05788fbf`):
+    el cruce POS↔nube deja de depender del `shortCode` (mutable: se libera al
+    borrar y se reasigna al reimportar). Cada producto lleva un `globalId`
+    (UUID v4) que lo identifica de forma estable en ambos sistemas:
+    - Schema **v23** (`src/db/schema.js`): `products` gana `globalId` (indexado)
+      y `updatedAt`; el upgrade backfillea ambos campos a productos existentes.
+    - `src/db/helpers.js`: altas, normalización e importación de backups
+      garantizan `globalId` (`crypto.randomUUID()`).
+    - `src/utils/syncExcel.js`: la exportación de stock incluye `globalId`; el
+      cruce de ventas en línea busca primero por `globalId` con fallback a
+      `codigo`.
+    - `src/components/Sync.jsx`: las filas de la sync directa llevan `globalId`.
+    - Lado nube (ianvs007/tienda-virtual): migración `005_global_id.sql` +
+      commits `65e4cee` (cruce por global_id), `d5f335f` (upsert batcheado),
+      `1f058ff` (conflictos → registro canónico del POS) y `f049d84` (vaciado
+      total del catálogo desde el admin). Detalle en la BITÁCORA de allá.
+    - 1 test nuevo (`syncExcel.test.js`).
+
+### 🔎 Auditoría integral POS↔nube (04/09/2026)
+
+Verificación en frío de ambos proyectos desde Qwen Code local:
+- POS: 210/210 tests (17 archivos) + `npm run build` OK; el `dist` regenerado
+  resultó idéntico al versionado (build determinista).
+- Nube: 8/8 tests (`node --test "functions/**/*.test.js"`) + build OK; el último
+  commit `f049d84` ESTÁ desplegado en Cloudflare Pages (el build automático al
+  push volvió a funcionar).
+- BD viva (D1 remoto): columna `products.global_id` presente, backfill completo
+  (2410/2410) e índice único parcial `idx_products_global_id` OK.
+- ⚠️ DRIFT de migraciones: el ledger `d1_migrations` remoto registra solo
+  001–004; la 005 se aplicó a mano sin registrar. NO correr
+  `wrangler d1 migrations apply tienda-virtual-db --remote` (re-aplicaría el
+  ALTER TABLE → duplicate column). Fix pendiente (solo insertar el registro;
+  decide Alain):
+  `npx wrangler d1 execute tienda-virtual-db --remote --command "INSERT INTO d1_migrations (name) VALUES ('005_global_id.sql');"`
+- ⚠️ DESPLIEGUE POS: no existe ningún zip con la versión globalId en
+  `D:\software\MisProyectos`; confirmar si las 3 máquinas ya la tienen (la sync
+  nueva lo requiere).
+- ⏸️ Pendiente visual: pestaña "Cierres de Caja" con `cashClosures` reales de
+  producción.

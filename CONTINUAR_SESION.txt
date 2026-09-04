@@ -1,85 +1,69 @@
 ================================================================================
 CONTINUAR SESIÓN — Tienda de Ropas (POS) + tienda virtual
-Fecha de corte: 2026-08-19 (noche) · rama `main` limpia y sincronizada con origin/main
+Fecha de corte: 2026-09-04 (auditoría integral; monorepo master limpio, sin remotes)
 ================================================================================
+
+DÓNDE VIVE CADA COSA
+--------------------
+- POS: D:\software\MisProyectos\tienda de ropas (dentro del monorepo local,
+  rama master, SIN remotes). Memoria de trabajo: CLAUDE.md.
+- Nube (clon real): D:\software\MisProyectos\tienda virtual - compra de ropa
+  (origin github.com/ianvs007/tienda-virtual, rama main sincronizada).
+  La carpeta tienda-virtual (sin espacios) del monorepo es una snapshot vieja.
+  El trabajo hecho en coder.qwen.ai aterriza en GitHub main, NO en el monorepo.
 
 ESTADO AL CORTAR
 ----------------
-- Repo POS (tienda de ropas): main sincronizado con origin/main, árbol de trabajo limpio.
-- Últimos commits pusheados:
-    62c4a86  feat(historial): pestaña de cierres de caja para admin con informe PDF
-    0e22a67  docs: registrar pestaña de cierres de caja en Historial de Caja
-    9de8476  docs: registrar actualizaciones de agosto y diagnostico del cruce POS-nube
-    901fbaa  feat(sync): comparador POS-nube de solo lectura para listar prendas desincronizadas
-    1edce6f  chore: ignorar directorio de estado local del agente
-- Tests: 209 en verde. Build OK.
+- POS: 210 tests en verde (17 archivos) + npm run build OK; el dist regenerado
+  resultó idéntico al versionado (05788fbf, build determinista).
+- Nube: 8/8 tests + build OK; último commit f049d84 DESPLEGADO en producción
+  (Cloudflare Pages; el build automático al push funciona).
+- BD viva (D1 remoto): products.global_id existe, backfill 2410/2410, índice
+  único parcial idx_products_global_id presente.
 
-QUÉ SE HIZO EN ESTA SESIÓN
---------------------------
-1) Se committeó la pestaña "Cierres de Caja" (Historial de Caja, solo admin):
-   SalesHistory.jsx + Layout.jsx + utils.js (+ REGISTRO_CAMBIOS_CIERRES_CAJA.md).
-
-2) Se diagnosticó POR QUÉ algunas prendas "no se guardan" en la tienda virtual:
-   - La nube cruza por `codigo` (= shortCode del POS) y compara `nombre`
-     (función `nubeDifiere` en functions/lib/sincronizar.js). Si difieren →
-     marca `cruce: true` y NO actualiza el stock.
-   - La nube JAMÁS actualiza `products.nombre`: solo crea (INSERT OR IGNORE) o
-     actualiza stock (UPDATE product_variants).
-   - Causas: (a) shortCodes duplicados en el POS por la carrera de dos pestañas
-     (YA corregido en cb20eab), (b) reasignación del código al borrar+reimportar
-     (el UNIQUE de la nube se libera), (c) renombrar una prenda en el POS después
-     de que ya está en la nube.
-   - Evidencia en D1: 00075 ("CONJT DEPORT 2PZ" → "BODY") y 02253 ("CHAMARRA" →
-     "BLAISER VESTIDO").
-
-3) Se construyó un comparador POS↔nube de SOLO LECTURA:
-   - public/volcar-pos.html: extrae los productos del IndexedDB del POS (mismo
-     origen http://localhost:3001/volcar-pos.html) → descarga pos-productos.json.
-   - comparar-pos-nube.cjs: cruza ese JSON contra D1 (vía wrangler) y reporta
-     duplicados, cruces, cruces por tilde, solo-POS, solo-nube, variante sin
-     coincidencia y coincidencias con diferencia de stock.
-   - volcar-pos.bat: abre la página con el perfil de Chrome del POS.
-
-4) Se actualizó CLAUDE.md (registro items 11-15, contador de tests a 209) y se
-   limpió el repo (borrados los scratch de diagnóstico; .codewhale/ gitignoreado).
+QUÉ SE HIZO DESDE EL CORTE ANTERIOR (19/08)
+-------------------------------------------
+1) Rediseño de la sync por identidad estable (22/08/2026):
+   - POS (2c6896cc + 05788fbf): schema v23 — products.globalId (indexado) +
+     updatedAt, con upgrade que backfillea UUIDs; altas e importaciones
+     garantizan globalId; la exportación de stock y la sync directa lo envían;
+     el cruce de ventas busca primero por globalId (fallback a codigo).
+   - Nube (65e4cee, d5f335f, 1f058ff, f049d84 en ianvs007/tienda-virtual):
+     migración 005_global_id.sql; cruce por global_id en vez de codigo mutable;
+     upsert batcheado; conflictos reemplazados por el registro canónico del
+     POS; vaciado total del catálogo desde el admin. La nube sigue siendo
+     DESCARTABLE (decisión de Alain del 22/08): la fuente canónica es el POS.
+2) Auditoría integral (04/09/2026, Qwen Code local): ver ESTADO AL CORTAR +
+   detección del drift de migraciones (pendiente A).
 
 PENDIENTE / PRÓXIMOS PASOS
 --------------------------
-A. EJECUTAR EL COMPARADOR (lista definitiva de desincronizadas):
-   1. Con el POS corriendo, ejecutar volcar-pos.bat (o abrir
-      http://localhost:3001/volcar-pos.html).
-   2. "Volcar productos" → "Descargar pos-productos.json".
-   3. node comparar-pos-nube.cjs pos-productos.json --salida=reporte.txt
-   Requiere auth de wrangler (ya configurada en esta máquina).
+A. DRIFT de migraciones (nube): el ledger d1_migrations remoto registra solo
+   001–004; la 005 se aplicó a mano. NO ejecutar
+   `npx wrangler d1 migrations apply tienda-virtual-db --remote` (re-aplicaría
+   el ALTER TABLE → duplicate column). Fix (solo insertar el registro;
+   requiere aprobación de Alain):
+   npx wrangler d1 execute tienda-virtual-db --remote --command "INSERT INTO d1_migrations (name) VALUES ('005_global_id.sql');"
 
-B. RECONCILIAR LOS CRUCES reportados:
-   - Por cada código en "cruces", decidir cuál es el nombre correcto y, en el
-     admin web (/admin → Prendas), borrar la prenda equivocada o corregir el
-     código; o renombrar en el POS. Luego re-sincronizar.
-   - Ya se conocen 00075 y 02253 (histórico); confirmar si quedan más.
+B. DESPLIEGUE POS: no existe ningún zip con la versión globalId en
+   D:\software\MisProyectos → las 3 máquinas probablemente siguen con la
+   versión previa, y la sync nueva por global_id necesita el POS actualizado.
+   Armar zip excluyendo node_modules, .git, .claude y backup_tienda_ropa_*.json
+   y copiarlo a mano a las 3 máquinas.
 
-C. FIXES OPCIONALES EN LA NUBE (proyecto "tienda virtual - compra de ropa"):
-   - Reconciliar cruces con acción explícita (hoy solo se salta el stock).
-   - Hacer del shortCode un SKU inmutable (no reutilizable).
-   - Normalizar nombres en nubeDifiere (NFD, sin tildes) para evitar falsos cruces.
-   - Persistir cruces/duplicados (hoy solo vuelven en la respuesta HTTP).
-
-D. VALIDACIÓN VISUAL: pestaña "Cierres de Caja" con rol admin y cashClosures reales.
-
-E. DESPLIEGUE (si Alain lo pide): falta regenerar dist (`build: regenerar dist ...`)
-   y armar el zip, porque el feature Cierres de Caja + el comparador no tienen build.
+C. VALIDACIÓN VISUAL: pestaña Cierres de Caja (Historial de Caja, solo admin)
+   con cashClosures reales del perfil de producción.
 
 CÓMO ACCEDER A LA NUBE (D1)
 ---------------------------
-- Proyecto web: "tienda virtual - compra de ropa" (también hay una copia
-  "tienda-virtual" sin espacios; mismo remote github.com/ianvs007/tienda-virtual).
 - Base: tienda-virtual-db (id cec65991-901c-4a32-898d-18e620a424ef). Solo lectura:
     npx wrangler d1 execute tienda-virtual-db --remote --command "SELECT ..."
-- Lógica clave de la sync: functions/lib/sincronizar.js (calcularSincronizacion,
-  nubeDifiere, normalizarCodigo), functions/lib/catalogo.js
-  (aplicarImportacionCatalogo), functions/api/sync.js (endpoint directo /api/sync).
+- Despliegues: npx wrangler pages deployment list --project-name=tienda-virtual
+- Lógica clave de la sync: functions/lib/sincronizar.js (cruce por global_id,
+  calcularSincronizacion), functions/lib/catalogo.js, functions/api/sync.js.
 
-ARCHIVOS CLAVE DEL COMPARADOR
------------------------------
-- POS: comparar-pos-nube.cjs · public/volcar-pos.html · volcar-pos.bat
+HERRAMIENTAS DE DIAGNÓSTICO (vigentes)
+--------------------------------------
+- comparar-pos-nube.cjs + public/volcar-pos.html + volcar-pos.bat
+  (resultado del 22/08: 2408 productos coincidentes, 0 cruces).
 ================================================================================
