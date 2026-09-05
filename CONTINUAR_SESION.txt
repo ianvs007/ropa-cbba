@@ -53,6 +53,18 @@ B. DESPLIEGUE POS: zip `ropa-cbba-v5-globalid-20260904.zip` ARMADO en
 C. VALIDACIÓN VISUAL: pestaña Cierres de Caja (Historial de Caja, solo admin)
    con cashClosures reales del perfil de producción.
 
+D. ⏳ DIAGNÓSTICO ETIQUETAS↔NUBE (04/09 noche, EN CURSO — es la prioridad al
+   retomar): los códigos de las etiquetas físicas no coinciden con la web.
+   Causa confirmada: son DOS numeraciones (products.shortCode = lo que usa la
+   nube; barcodes[].shortCode = lo impreso en la etiqueta). PRÓXIMO PASO:
+   Alain trae pos-productos.json volcado EN LA MÁQUINA DE LA TIENDA con
+   public/volcar-pos.html (versión extendida, ya commiteada); luego correr
+   `node comparar-dump-nube.cjs` (refrescar antes nube-productos.json con
+   wrangler) y aplicar el fix acordado: zip v5 en la central → sync → vaciado
+   + re-sync → alinear código de producto = código de unidad. NO volver a
+   pedir los 5 códigos de ejemplo ni re-explicar el mecanismo: todo está en
+   CLAUDE.md, sección "Diagnóstico etiquetas↔nube".
+
 CÓMO ACCEDER A LA NUBE (D1)
 ---------------------------
 - Base: tienda-virtual-db (id cec65991-901c-4a32-898d-18e620a424ef). Solo lectura:

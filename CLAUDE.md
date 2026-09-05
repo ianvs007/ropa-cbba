@@ -275,3 +275,53 @@ Verificación en frío de ambos proyectos desde Qwen Code local:
   a mano a las 3 máquinas.
 - ⏸️ Pendiente visual: pestaña "Cierres de Caja" con `cashClosures` reales de
   producción.
+
+### 🔎 Diagnóstico etiquetas↔nube (noche del 04/09/2026) — EN CURSO
+
+Síntoma reportado por Alain: los códigos de las etiquetas físicas de las
+prendas no coinciden con los de la tienda virtual, aunque el POS sí coincide
+con las etiquetas.
+
+**Causa estructural CONFIRMADA en código** (no es corrupción ni máquinas
+divergentes):
+- El POS maneja DOS sistemas de códigos de 5 dígitos en el mismo espacio
+  numérico:
+  - `products.shortCode` (por modelo) → la nube lo usa como `products.codigo`;
+  - `barcodes[].shortCode` (por prenda física; `generateBarcodesForProduct`
+    los genera DISTINTOS al del producto) → es lo que imprime la etiqueta
+    (`MassLabeling.jsx`).
+- La búsqueda del POS (`findProductByBarcode`) resuelve AMBAS tablas, por eso
+  POS↔etiqueta siempre funciona; la nube solo conoce shortCodes de producto →
+  etiqueta↔nube nunca coincide.
+- `planificarReasignacionDuplicados` (reparación de duplicados) solo reasigna
+  shortCodes de producto; las etiquetas ya impresas no se tocan.
+
+**Evidencia** (dump de DESARROLLO — esta máquina, no la tienda):
+`pos-productos.json` del 04/09 23:57, 2185 productos / 2781 unidades,
+analizado con `comparar-dump-nube.cjs` (requiere `nube-productos.json`,
+snapshot de la nube descargado con wrangler):
+- 2004 números son shortCode de producto Y de unidad a la vez (ambigüedad).
+- Ejemplos de Alain resueltos: 01952 = etiqueta del producto 01951 (VESTIDO
+  MOÑO); 02418 = etiqueta del producto 02923 (FALDA TABLEADO); 02797 =
+  producto VESTIDO VICTORIANO y a la vez etiqueta de un VESTIDO BRILLO
+  (producto 02786) — explica exactamente lo que veía.
+- 03303 y 02969 no existen en el dump de desarrollo.
+- OJO: contra ese dump (desarrollo) salieron 4 cruces de nombre reales
+  (01377, 02954, 02955, 02956) y 225 códigos fantasma en la nube; esos
+  números hay que REMEDIRLOS con el dump de la tienda.
+
+**Próximo paso (corte de la sesión):**
+1. Alain ejecuta el volcado extendido (`public/volcar-pos.html`, ya vuelca
+   productos + unidades + globalId) EN LA MÁQUINA DE LA TIENDA y trae el
+   `pos-productos.json`. El volcado es compatible con el POS viejo (lee
+   IndexedDB directo; `globalId` saldrá vacío si el esquema es v22).
+2. Correr `node comparar-dump-nube.cjs` con ese dump (refrescar antes
+   `nube-productos.json` con wrangler).
+3. Fix acordado en principio: instalar zip v5 (`globalId`) en la máquina
+   central → sincronizar (corrige cruces por autoridad POS) → vaciado total
+   del catálogo cloud + re-sync (limpia los fantasmas) → alinear en el POS
+   shortCode de producto = shortCode de unidad para prendas únicas (mandan
+   las etiquetas ya impresas; el catálogo web es 100% prendas únicas).
+
+Archivos de trabajo sin versionar (scratch, como `antes_sync.json` en la
+nube): `pos-productos.json` (dump de desarrollo) y `nube-productos.json`.
