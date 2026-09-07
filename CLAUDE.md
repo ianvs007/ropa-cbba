@@ -22,7 +22,8 @@ el 22/08/2026 la identidad de cruce con la nube es el `globalId` (UUID estable).
   se copia a mano a las 3 máquinas (no hacen git pull).
 - **Tests**: `npx vitest run` (entorno node, funciones puras — la lógica testeable
   se extrae a `src/utils/` o se exporta del hook). Toda la suite en verde +
-  `npm run build` antes de commitear. **210 tests** al 2026-09-04.
+  `npm run build` antes de commitear. **218 tests** versionados al 2026-09-07
+  (243 en el working tree: 25 más del planificador de alineación, sin versionar).
 - **ESLint**: hay falsos positivos preexistentes (`Icon` en Layout/CashClose,
   vars sin usar); no arreglarlos de pasada — verificar con stash que no se
   agregan problemas nuevos.
@@ -325,3 +326,108 @@ snapshot de la nube descargado con wrangler):
 
 Archivos de trabajo sin versionar (scratch, como `antes_sync.json` en la
 nube): `pos-productos.json` (dump de desarrollo) y `nube-productos.json`.
+
+### 🛠️ Fixes de identidad del shortCode (07/09/2026, commit `a2bc695`)
+
+Los tres estaban vivos en el código y **viajaban dentro del zip v5**. Se
+detectaron al preparar el despliegue; `git log -L` ubica el origen del primero
+en `ff3eeeb5` (2026-08-20), o sea que producción probablemente corre un build
+anterior donde `generateShortCode()` aún devolvía un string.
+
+18. **`generateShortCode()` devuelve `{ shortCode, globalId }` y dos llamadores
+    lo usaban como string**: `ProductList.openNew` lo guardaba crudo en
+    `formData.shortCode` (y `openNew` es el botón "Nuevo") y el blindaje de
+    `ProductForm.handleSave` lo reasignaba igual. En el alta nueva fallaba de
+    una de dos formas: o `where('shortCode').equals(objeto)` lanzaba `DataError`
+    y el producto no se guardaba (sin toast — la excepción escapaba de
+    `handleSave`), o se guardaba un objeto como `shortCode`, registro no
+    indexable → invisible a la búsqueda por código y fuera de la sync. Ahora se
+    desestructura en los dos sitios.
+    **Dato de fondo**: el `globalId` que genera la función **no lo consumía
+    nadie** (ningún `.jsx`; solo el upgrade v23, `exportDatabase` —al vuelo y sin
+    persistir— e `importDatabase` lo garantizaban). Las altas manuales viajaban a
+    la nube con `globalId: ''`, fuera del cruce por identidad estable. Ahora el
+    `globalId` pre-generado llega al producto y `EMPTY` lo declara.
+19. **`GUARDAR Y NUEVO` dejaba el producto siguiente sin identidad**: el bloque
+    `keepOpen` reseteaba con `setForm({ ...EMPTY })` y `EMPTY.shortCode = ''`;
+    como el blindaje solo actúa `if (shortCodeFinal)`, el segundo producto se
+    guardaba **sin `shortCode` y sin `barcode` de modelo** (ningún `useEffect`
+    los regenera y el formulario no los muestra: quedan fuera de la búsqueda por
+    código y de la sync). Ahora el reset asigna EAN (`generateUniqueBarcode`),
+    `shortCode` y `globalId` nuevos, igual que `openNew`.
+20. **La guarda anti-duplicados deshacía la alineación al editar**:
+    `tomadoPorUnidad` contaba CUALQUIER unidad con ese código, incluidas las del
+    propio producto. Una prenda única alineada comparte a propósito el código con
+    su etiqueta impresa, así que editarle el precio le asignaba un código nuevo
+    (y de paso disparaba el item 18). La decisión pasa a la función pura
+    `codigoTomadoPorOtro` en `utils/duplicateShortCodes.js` (excluye
+    `productId === editing`), con 8 tests reales en `duplicateShortCodes.test.js`.
+
+⚠️ Cobertura: los items 18 y 19 son wiring de React/Dexie y **no tienen cobertura
+automática posible en este entorno** (vitest en node, sin React DOM ni
+IndexedDB); su garantía es `npm run build` + revisión del diff. El item 20 sí
+queda cubierto por tests sobre la función pura. 218 tests versionados en verde +
+build OK + eslint sin problemas nuevos en los archivos tocados (los 4 warnings de
+`ProductList.jsx:19-23` son preexistentes).
+
+### 🔎 Alineación etiqueta↔producto: planificador listo, SIN cablear (07/09/2026)
+
+- `src/utils/alinearCodigosEtiqueta.js` + `src/__tests__/alinearCodigosEtiqueta.test.js`
+  (25 tests) — **SIN VERSIONAR**. Lógica PURA: `planificarAlineacionEtiquetas` y
+  `aplicarPlanEnSeco`. Regla de negocio (decisión de Alain): en una **prenda
+  única** el producto adopta el `shortCode` de su etiqueta, que es el número que
+  el cliente tiene en la mano. Si ese código lo tiene otro producto que no es
+  candidata, se le da uno nuevo max+1 (motivo `desalojo`).
+- Resuelve cadenas e intercambios (ciclos de 2) **sin códigos temporales**,
+  porque `shortCode` no es índice único en Dexie: lo que debe cumplirse es que el
+  estado FINAL sea único entre productos (la nube sí tiene `idx_products_codigo`
+  UNIQUE y `codigosDuplicadosEnFilas` bloquea la sync). **No rellena huecos
+  libres**: un hueco puede ser una etiqueta vieja ya impresa cuya prenda se
+  vendió. Bloquea en vez de adivinar ante etiquetas duplicadas (→ correr antes
+  `fixMissingShortCodes()`) o códigos de producto duplicados (→
+  `fixDuplicateProductShortCodes()`).
+- Simulación sobre el dump de DESARROLLO (`analizar-alineacion.cjs` y
+  `simular-alineacion.mjs`, scratch sin versionar): 190 alineaciones + 21
+  desalojos, 3 bloqueos (etiquetas duplicadas `00001` y `02506`), 0 códigos
+  duplicados al final. Búsqueda web por código de etiqueta sobre 2132 prendas sin
+  vender: prenda correcta 64.4% → 71.8%, **otra prenda 7.1% → 2.0%**,
+  inexistente 607 → 559. Residuo: 601 etiquetas, y **598 son de productos con
+  varias unidades** (245 productos, uno con 64) → no alineables 1:1, es
+  estructural; este fix NO lo resuelve.
+- **PENDIENTE (paso siguiente)**: cablear `alinearCodigosEtiquetas()` en
+  `db/helpers.js` + botón en `Sync.jsx` (misma forma que
+  `fixDuplicateProductShortCodes`, cuyo UI es `handleRepararDuplicados`), y
+  **remedir todo con el dump de la MÁQUINA DE LA TIENDA** (los números de arriba
+  son del dump de desarrollo del 04/09 23:57: 2185 productos / 2781 unidades, y
+  esa BD viene de un backup IMPORTADO, no de altas por `openNew`).
+
+### 🔴 Bloqueadores de despliegue (07/09/2026)
+
+1. **El zip v5 trae el `volcar-pos.html` VIEJO.**
+   `ropa-cbba-v5-globalid-20260904.zip` se armó a las 14:30 del 04/09 y el
+   volcado extendido (productos + unidades + globalId) se commiteó en `da86fc02`
+   a las 19:53. Verificado dos veces: extrayendo el archivo del zip (su
+   `dist/volcar-pos.html` no contiene `unidades`/`barcodes`/`globalId`) y por git
+   — al regenerar el dist el 07/09, `dist/volcar-pos.html` cambia 19 líneas, o
+   sea que **el `dist` versionado está desactualizado respecto de `public/`**.
+   El dump del 04/09 salió del dev server de esta máquina (Vite sirve `public/`
+   directo), no de un dist. → Regenerar dist (commit `build:`) y rearmar el zip
+   ANTES de pedir el volcado en la tienda: sin unidades no se puede medir ni
+   alinear.
+2. Los items 18-19 **están dentro del zip v5**: o se rearma el zip con `a2bc695`
+   incluido, o se verifica el alta de un producto nuevo en la tienda ANTES de
+   desplegar.
+3. La nube no recibió código nuevo desde el 04/09: `origin/main` sigue en
+   `f049d84` (el desplegado en Cloudflare Pages) y el clon local
+   (`tienda virtual - compra de ropa`) va **2 commits por delante SIN pushear**
+   (`32e496b` y `e80067a`, ambos solo de bitácora, sin código). El D1 remoto
+   tenía 2410 productos activos con `global_id` (verificado con wrangler el
+   04/09 y el 07/09 en la sesión anterior; no re-verificado en este corte). El
+   ritual de sync no cambió: falta solo el dump de la MÁQUINA DE LA TIENDA.
+
+**Punto de retomar (07/09):** (a) regenerar dist con commit `build:` y rearmar el
+zip v5 con el volcado extendido + los fixes de `a2bc695`; (b) cablear el botón de
+alineación en `Sync.jsx`; (c) recién entonces el ritual en la tienda — zip a la
+central → sync → vaciado total del catálogo cloud + re-sync → alinear → re-sync →
+volcado nuevo y `node comparar-dump-nube.cjs` + `node simular-alineacion.mjs`
+para remedir.
