@@ -1,8 +1,9 @@
 import React from 'react';
 import { X } from 'lucide-react';
-import { db, generateBarcode, generateBarcodesForProduct, generateShortCode, getLocalISOString } from '../db';
+import { db, generateBarcode, generateBarcodesForProduct, generateShortCode, generateUniqueBarcode, getLocalISOString } from '../db';
 import TypeaheadInput from './ui/TypeaheadInput';
 import { getEmbedding } from '../utils/garmentClassifier';
+import { codigoTomadoPorOtro } from '../utils/duplicateShortCodes';
 
 const SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'Talla Única',
     '6', '8', '10', '12', '14', '16', '18', '20', '22', '24',
@@ -11,7 +12,7 @@ const SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'Talla Única',
 const EMPTY = {
     name: '', barcode: '', category: '', brand: '', size: '', color: '',
     cost: '', price: '', stock: '', description: '', photo: '', extraData: '',
-    shortCode: '', customData: {},
+    shortCode: '', globalId: '', customData: {},
 };
 
 /**
@@ -252,14 +253,19 @@ export default function ProductForm({
             // en el momento del guardado (misma lógica de shortCodeExists: products ∪
             // barcodes, excluyendo el propio producto en edición) y, si ya lo tomó
             // otro, se regenera ahí mismo: la carrera se resuelve sola.
+            // Las unidades del propio producto NO cuentan como conflicto: una prenda
+            // única alineada comparte a propósito el código con su etiqueta impresa.
             let shortCodeFinal = form.shortCode;
             if (shortCodeFinal) {
                 const dupProducto = await db.products.where('shortCode').equals(shortCodeFinal).first();
-                const tomadoPorOtro = dupProducto && dupProducto.id !== editing;
-                const tomadoPorUnidad = !tomadoPorOtro &&
-                    !!(await db.barcodes.where('shortCode').equals(shortCodeFinal).first());
-                if (tomadoPorOtro || tomadoPorUnidad) {
-                    shortCodeFinal = await generateShortCode();
+                const dupUnidades = await db.barcodes.where('shortCode').equals(shortCodeFinal).toArray();
+                const enUso = codigoTomadoPorOtro({
+                    productoConEseCodigo: dupProducto,
+                    unidadesConEseCodigo: dupUnidades,
+                    editing,
+                });
+                if (enUso) {
+                    shortCodeFinal = (await generateShortCode()).shortCode;
                     showToast(`El código ${form.shortCode} ya estaba en uso; se asignó ${shortCodeFinal} automáticamente`, 'error');
                 }
             }
@@ -352,8 +358,14 @@ export default function ProductForm({
                     // regenerado por el blindaje anti-duplicados)
                     const nModelo = parseInt(shortCodeFinal, 10);
                     if (nModelo > 0) existingRef.current.nums.add(nModelo);
-                    // Limpiar formulario y estados visuales
-                    setForm({ ...EMPTY });
+                    // Limpiar formulario y estados visuales, dejando al producto
+                    // siguiente su identidad NUEVA (igual que ProductList.openNew):
+                    // con el formulario vacío se guardaría sin shortCode ni EAN, o
+                    // sea invisible a la búsqueda por código y fuera de la sync.
+                    const siguienteEAN = await generateUniqueBarcode();
+                    existingRef.current.eans.add(siguienteEAN);
+                    const { shortCode: siguienteCodigo, globalId: siguienteGlobalId } = await generateShortCode();
+                    setForm({ ...EMPTY, barcode: siguienteEAN, shortCode: siguienteCodigo, globalId: siguienteGlobalId });
                     setUnitCodes([]);
                     stopCamera();           // por si la cámara quedó abierta
                     // hacer scroll arriba para empezar el nuevo registro (si existe formScrollRef)

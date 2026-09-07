@@ -17,11 +17,13 @@
  *    (db/helpers.js, que lo aplica en UNA transacción Dexie).
  *  - codigosDuplicadosEnFilas (utils/syncExcel): bloqueo de la sync/exportación
  *    en Sync.jsx cuando las filas de stock traen un código repetido.
+ *  - codigoTomadoPorOtro: blindaje anti-duplicados de ProductForm.handleSave
+ *    (excluye el producto en edición y sus propias unidades).
  * ══════════════════════════════════════════════════════════════════════════════
  */
 
 import { describe, it, expect } from 'vitest';
-import { agruparDuplicadosProductos, planificarReasignacionDuplicados } from '../utils/duplicateShortCodes';
+import { agruparDuplicadosProductos, planificarReasignacionDuplicados, codigoTomadoPorOtro } from '../utils/duplicateShortCodes';
 import { codigosDuplicadosEnFilas, filasStockParaExportar } from '../utils/syncExcel';
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -232,5 +234,83 @@ describe('codigosDuplicadosEnFilas (bloqueo antes de sincronizar/exportar)', () 
         expect(codigosDuplicadosEnFilas([])).toEqual([]);
         expect(codigosDuplicadosEnFilas()).toEqual([]);
         expect(codigosDuplicadosEnFilas([{ codigo: '' }, {}])).toEqual([]);
+    });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// codigoTomadoPorOtro (blindaje anti-duplicados de ProductForm.handleSave)
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('codigoTomadoPorOtro (blindaje del formulario al guardar)', () => {
+
+    it('código libre: no se regenera', () => {
+        expect(codigoTomadoPorOtro({
+            productoConEseCodigo: null,
+            unidadesConEseCodigo: [],
+            editing: null,
+        })).toBe(false);
+    });
+
+    it('alta nueva: otro producto ya tiene el código → se regenera', () => {
+        expect(codigoTomadoPorOtro({
+            productoConEseCodigo: { id: 42, name: 'VESTIDO MOÑO', shortCode: '01951' },
+            unidadesConEseCodigo: [],
+            editing: null,
+        })).toBe(true);
+    });
+
+    it('alta nueva: una unidad de otra prenda ya tiene el código → se regenera', () => {
+        expect(codigoTomadoPorOtro({
+            productoConEseCodigo: null,
+            unidadesConEseCodigo: [{ id: 7, productId: 42, shortCode: '02923' }],
+            editing: null,
+        })).toBe(true);
+    });
+
+    it('edición de una prenda única YA ALINEADA: su propia unidad no es conflicto', () => {
+        // Caso que motivó el fix: el producto adoptó el código de su etiqueta
+        // física, así que products.shortCode === barcodes[].shortCode. Contar la
+        // unidad propia como conflicto desharía la alineación al editar el precio.
+        expect(codigoTomadoPorOtro({
+            productoConEseCodigo: { id: 42, name: 'FALDA TABLEADO', shortCode: '02923' },
+            unidadesConEseCodigo: [{ id: 7, productId: 42, shortCode: '02923' }],
+            editing: 42,
+        })).toBe(false);
+    });
+
+    it('edición: varias unidades propias comparten el código y ninguna es ajena', () => {
+        expect(codigoTomadoPorOtro({
+            productoConEseCodigo: { id: 10, name: 'POLERA', shortCode: '00075' },
+            unidadesConEseCodigo: [
+                { id: 1, productId: 10, shortCode: '00075' },
+                { id: 2, productId: 10, shortCode: '00075' },
+            ],
+            editing: 10,
+        })).toBe(false);
+    });
+
+    it('edición: la etiqueta de OTRA prenda tiene el código → se regenera', () => {
+        expect(codigoTomadoPorOtro({
+            productoConEseCodigo: { id: 42, name: 'FALDA TABLEADO', shortCode: '02923' },
+            unidadesConEseCodigo: [
+                { id: 7, productId: 42, shortCode: '02923' },
+                { id: 9, productId: 88, shortCode: '02923' },
+            ],
+            editing: 42,
+        })).toBe(true);
+    });
+
+    it('edición: otro producto tiene el código → se regenera', () => {
+        expect(codigoTomadoPorOtro({
+            productoConEseCodigo: { id: 88, name: 'VESTIDO BRILLO', shortCode: '02797' },
+            unidadesConEseCodigo: [],
+            editing: 42,
+        })).toBe(true);
+    });
+
+    it('tolera un llamado sin argumentos y unidades nulas', () => {
+        expect(codigoTomadoPorOtro()).toBe(false);
+        expect(codigoTomadoPorOtro({ unidadesConEseCodigo: null, editing: 5 })).toBe(false);
+        expect(codigoTomadoPorOtro({ unidadesConEseCodigo: [null], editing: 5 })).toBe(true);
     });
 });

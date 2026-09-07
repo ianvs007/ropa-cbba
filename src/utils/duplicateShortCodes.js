@@ -101,3 +101,27 @@ export function planificarReasignacionDuplicados(products = [], barcodes = []) {
 
     return reasignaciones;
 }
+
+/**
+ * Blindaje del formulario (ProductForm.handleSave): decide si el shortCode que se
+ * va a guardar está tomado por OTRO registro y hay que regenerarlo.
+ *
+ * Se excluye SIEMPRE el producto en edición, en las dos tablas:
+ *  - en `products`, porque el registro que se está editando tiene su propio código;
+ *  - en `barcodes`, porque una prenda única alineada comparte a propósito el código
+ *    con su etiqueta física (utils/alinearCodigosEtiqueta.js). Contar la unidad
+ *    propia como conflicto haría que EDITAR esa prenda le asignara un código nuevo
+ *    y deshiciera la alineación con la etiqueta ya impresa.
+ * En un alta nueva (`editing` = null) ninguna unidad es propia, así que todas
+ * cuentan como conflicto.
+ *
+ * @param {Object}   options
+ * @param {?Object}  options.productoConEseCodigo   Producto hallado con ese shortCode (o null)
+ * @param {Array}    options.unidadesConEseCodigo   Unidades (barcodes) halladas con ese shortCode
+ * @param {?number}  options.editing                Id del producto en edición; null si es alta
+ * @returns {boolean} true si hay que regenerar el código
+ */
+export function codigoTomadoPorOtro({ productoConEseCodigo = null, unidadesConEseCodigo = [], editing = null } = {}) {
+    if (productoConEseCodigo && productoConEseCodigo.id !== editing) return true;
+    return (unidadesConEseCodigo || []).some((u) => u?.productId !== editing);
+}

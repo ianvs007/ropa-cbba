@@ -81,8 +81,10 @@ export default function ProductList() {
 
     const openNew = async () => {
         const barcode = await generateUniqueBarcode();
-        const shortCode = await generateShortCode();
-        setFormData({ ...EMPTY, barcode, shortCode });
+        // generateShortCode devuelve la identidad completa del alta: el código
+        // corto del modelo Y el globalId con el que la nube lo va a cruzar.
+        const { shortCode, globalId } = await generateShortCode();
+        setFormData({ ...EMPTY, barcode, shortCode, globalId });
         setEditing(null);
         setShowForm(true);
     };
