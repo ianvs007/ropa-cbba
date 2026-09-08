@@ -25,6 +25,7 @@ function normalizarEncabezado(header) {
 // Alias aceptados por columna (ya normalizados) → campo canónico.
 // La nube exporta encabezados exactos, pero se toleran variantes comunes.
 const ALIAS_COLUMNAS = {
+    globalid: 'globalId',
     codigo: 'codigo', code: 'codigo', cod: 'codigo',
     nombre: 'nombre', producto: 'nombre',
     talla: 'talla', size: 'talla',
@@ -176,8 +177,9 @@ export function ventasDesdeApi(ventasApi = []) {
     (ventasApi || []).forEach((item, idx) => {
         const numVenta = idx + 1; // posición en el array de la API
 
+        const globalId = String(item?.globalId ?? '').trim();
         const codigo = String(item?.codigo ?? '').trim();
-        if (!codigo) {
+        if (!globalId && !codigo) {
             errores.push(`Venta ${numVenta}: código vacío`);
             return;
         }
@@ -189,6 +191,7 @@ export function ventasDesdeApi(ventasApi = []) {
         }
 
         ventas.push({
+            globalId: globalId || null,
             codigo,
             nombre: String(item?.nombre ?? '').trim(),
             talla: String(item?.talla ?? '').trim(),

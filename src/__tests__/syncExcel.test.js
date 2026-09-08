@@ -131,6 +131,16 @@ describe('parsearVentasEnLinea', () => {
         const { ventas } = parsearVentasEnLinea([{ codigo: 1, cantidad: 1 }]);
         expect(ventas[0].codigo).toBe('1');
     });
+
+    it('reconoce la columna globalId (alias "globalid" normalizado) del Excel de la nube', () => {
+        const rows = [{
+            globalId: 'uuid-real-pos', codigo: '00001', nombre: 'Vestido Floral',
+            talla: 'M', color: 'Rojo', cantidad: 1, precio_unit: 150,
+        }];
+        const { ventas, errores } = parsearVentasEnLinea(rows);
+        expect(errores).toHaveLength(0);
+        expect(ventas[0].globalId).toBe('uuid-real-pos');
+    });
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -148,10 +158,21 @@ describe('ventasDesdeApi', () => {
         expect(errores).toHaveLength(0);
         // Mismo shape exacto que produce parsearVentasEnLinea
         expect(ventas).toEqual([{
+            globalId: null,
             codigo: '00001', nombre: 'Vestido Floral', talla: 'M', color: 'Rojo',
             cantidad: 2, precioUnit: 150, estado: 'pagado',
             pedido: 'AB12CD34', fecha: '2026-07-27 10:30:00',
         }]);
+    });
+
+    it('preserva el globalId de la API para el cruce por identidad estable', () => {
+        const apiVentas = [{
+            globalId: 'uuid-real-pos', codigo: '00001', nombre: 'Vestido Floral',
+            talla: 'M', color: 'Rojo', cantidad: 1, precio_unit: 150,
+        }];
+        const { ventas, errores } = ventasDesdeApi(apiVentas);
+        expect(errores).toHaveLength(0);
+        expect(ventas[0].globalId).toBe('uuid-real-pos');
     });
 
     it('cantidad inválida va a errores y no bloquea las válidas', () => {
@@ -171,11 +192,20 @@ describe('ventasDesdeApi', () => {
     it('código vacío va a errores', () => {
         const { ventas, errores } = ventasDesdeApi([
             { codigo: '', cantidad: 1 },
-            { cantidad: 2 }, // sin campo codigo
+            { cantidad: 2 }, // sin campo codigo ni globalId
         ]);
         expect(ventas).toHaveLength(0);
         expect(errores).toHaveLength(2);
         expect(errores[0]).toContain('código vacío');
+    });
+
+    it('con globalId pero sin codigo NO va a errores (identidad estable basta)', () => {
+        const { ventas, errores } = ventasDesdeApi([
+            { globalId: 'uuid-sin-codigo', cantidad: 1 },
+        ]);
+        expect(errores).toHaveLength(0);
+        expect(ventas[0].globalId).toBe('uuid-sin-codigo');
+        expect(ventas[0].codigo).toBe('');
     });
 
     it('estado cancelado NO se filtra (mismo criterio que parsearVentasEnLinea): se normaliza a minúsculas', () => {
@@ -190,6 +220,7 @@ describe('ventasDesdeApi', () => {
     it('campos ausentes se sanean: precio_unit inválido → 0, textos → string', () => {
         const { ventas } = ventasDesdeApi([{ codigo: 7, cantidad: 1, precio_unit: 'caro' }]);
         expect(ventas[0]).toEqual({
+            globalId: null,
             codigo: '7', nombre: '', talla: '', color: '',
             cantidad: 1, precioUnit: 0, estado: '', pedido: '', fecha: '',
         });
