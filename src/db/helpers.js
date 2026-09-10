@@ -2,6 +2,7 @@ import { db } from './schema';
 import { filterClosureMovements } from '../utils/closureMovements';
 import { agruparDuplicadosProductos, planificarReasignacionDuplicados } from '../utils/duplicateShortCodes';
 import { planificarAlineacionEtiquetas } from '../utils/alinearCodigosEtiqueta';
+import { CLAVES_SYNC_V2, INTERVALO_AUTO_DEFAULT_MIN } from '../utils/syncV2';
 
 // ==============================================================================
 // 🔧 HELPERS — Funciones utilitarias de base de datos
@@ -179,6 +180,123 @@ export async function alinearCodigosEtiquetas() {
             });
         }
         return plan;
+    });
+}
+
+// ══════════════════ SINCRONIZACIÓN v2 POR EVENTOS ══════════════════
+// Capa Dexie del protocolo descrito en docs/DISENO_SYNC_EVENTOS.md. La
+// decisión vive en utils/syncV2.js (pura); acá solo se lee y se escribe.
+
+/**
+ * Asigna globalId a los productos que no lo tengan (la nube rechaza filas sin
+ * él). Idempotente. Devuelve cuántos se completaron.
+ */
+export async function garantizarGlobalIds() {
+    return db.transaction('rw', db.products, async () => {
+        const sinGlobal = await db.products.filter(p => !String(p.globalId ?? '').trim()).toArray();
+        const ahora = new Date().toISOString();
+        for (const p of sinGlobal) {
+            await db.products.update(p.id, { globalId: crypto.randomUUID(), updatedAt: ahora });
+        }
+        return sinGlobal.length;
+    });
+}
+
+/**
+ * Lee (y crea si falta) la configuración local de la sync v2.
+ * @returns {Promise<{dispositivoId, nombreDispositivo, ultimoEventoAck, auto, intervaloMin, ultimaOk, ultimoError}>}
+ */
+export async function obtenerConfigSyncV2() {
+    const leer = async (clave) => (await db.settings.get(clave))?.value;
+
+    let dispositivoId = String((await leer(CLAVES_SYNC_V2.dispositivoId)) || '').trim();
+    if (!dispositivoId) {
+        dispositivoId = crypto.randomUUID();
+        await db.settings.put({ key: CLAVES_SYNC_V2.dispositivoId, value: dispositivoId });
+    }
+    const ack = Number(await leer(CLAVES_SYNC_V2.ultimoEventoAck));
+    const intervalo = Number(await leer(CLAVES_SYNC_V2.intervaloMin));
+    const autoRaw = await leer(CLAVES_SYNC_V2.auto);
+    return {
+        dispositivoId,
+        nombreDispositivo: String((await leer(CLAVES_SYNC_V2.nombreDispositivo)) || 'Central'),
+        ultimoEventoAck: Number.isInteger(ack) && ack > 0 ? ack : 0,
+        auto: autoRaw === true || autoRaw === 1 || String(autoRaw || '') === '1',
+        intervaloMin: Number.isFinite(intervalo) && intervalo >= 1 ? intervalo : INTERVALO_AUTO_DEFAULT_MIN,
+        ultimaOk: (await leer(CLAVES_SYNC_V2.ultimaOk)) || null,
+        ultimoError: (await leer(CLAVES_SYNC_V2.ultimoError)) || null,
+    };
+}
+
+/** ¿Cuáles de estos ids de evento ya se aplicaron en este POS? */
+export async function idsEventosYaAplicados(ids = []) {
+    if (!ids.length) return new Set();
+    const filas = await db.webEventos.bulkGet(ids.map(Number));
+    return new Set(filas.filter(Boolean).map(f => Number(f.id)));
+}
+
+/**
+ * Ejecuta el plan de `planificarAplicacionEventos` en UNA transacción:
+ * stock + unidades + kárdex + registro en webEventos (operaciones Y huérfanos,
+ * para no reintentar eternamente) + avance de `ultimoEventoAck`.
+ * Si algo falla, Dexie revierte todo y el ack no avanza.
+ */
+export async function aplicarPlanEventos(plan) {
+    return db.transaction('rw', [db.products, db.barcodes, db.kardex, db.webEventos, db.settings], async () => {
+        const ahora = new Date().toISOString();
+        const fechaLocal = getLocalISOString();
+
+        for (const op of plan.operaciones) {
+            await db.products.update(op.productId, { stock: op.stockNuevo, updatedAt: ahora });
+            for (const u of op.unidadesAMarcar) {
+                await db.barcodes.update(u.id, { used: true, usedRef: `WEB #${op.pedidoRef}` });
+            }
+            for (const u of op.unidadesALiberar) {
+                await db.barcodes.update(u.id, { used: false, usedRef: '' });
+            }
+            if (op.kardex.qty > 0) {
+                await db.kardex.add({
+                    productId: op.productId,
+                    date: fechaLocal,
+                    type: op.kardex.type,
+                    qty: op.kardex.qty,
+                    notes: op.kardex.notes,
+                    balanceAfter: op.stockNuevo,
+                    unitCodes: (op.kardex.type === 'salida' ? op.unidadesAMarcar : op.unidadesALiberar)
+                        .map(u => ({ shortCode: u.shortCode || '', barcode: u.barcode || '' })),
+                });
+            }
+            await db.webEventos.put({
+                id: op.eventoId,
+                tipo: op.tipo,
+                productId: op.productId,
+                pedidoRef: op.pedidoRef,
+                delta: op.delta,
+                resultado: op.aviso ? 'aplicado_con_aviso' : 'aplicado',
+                aviso: op.aviso || null,
+                aplicadoEn: ahora,
+            });
+        }
+        for (const h of plan.huerfanos) {
+            await db.webEventos.put({
+                id: h.eventoId,
+                tipo: h.tipo,
+                productId: null,
+                pedidoRef: '',
+                delta: 0,
+                resultado: 'huerfano',
+                aviso: h.motivo,
+                aplicadoEn: ahora,
+            });
+        }
+
+        if (plan.ultimoId > 0) {
+            const actual = Number((await db.settings.get(CLAVES_SYNC_V2.ultimoEventoAck))?.value) || 0;
+            if (plan.ultimoId > actual) {
+                await db.settings.put({ key: CLAVES_SYNC_V2.ultimoEventoAck, value: String(plan.ultimoId) });
+            }
+        }
+        return plan.resumen;
     });
 }
 
