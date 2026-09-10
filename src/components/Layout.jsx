@@ -13,6 +13,7 @@ import CashOpenModal from './CashOpenModal';
 import PendingClosuresBanner from './PendingClosuresBanner';
 import { useSecureDate } from '../hooks/useSecureDate';
 import { usePendingClosureDates } from '../hooks/usePendingClosureDates';
+import { useSyncAutomatica } from '../hooks/useSyncAutomatica';
 import { getExitWarning } from '../utils/exitWarning';
 import { useUser } from '../contexts/UserContext';
 import { hasPermission, PERMISSIONS } from '../utils/permissions';
@@ -91,6 +92,9 @@ export default function Layout({ children }) {
 
     const hasPendingClosures = pendingClosures.length > 0;
     const navigate = useNavigate();
+
+    // ── Sincronización automática con la tienda virtual (solo admin) ──
+    const syncAuto = useSyncAutomatica(user?.role === 'admin');
 
     // ── Apertura de caja obligatoria para vendedores ──
     const { isOpen: cashIsOpen, isClosed: cashIsClosed, openCash, isLoading: cashLoading } = useCashRegister();
@@ -206,6 +210,21 @@ export default function Layout({ children }) {
                                 <span className="ml-auto bg-red-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.6)]">
                                     {pendingClosures.length}
                                 </span>
+                            )}
+                            {path === '/sync' && syncAuto.enCurso && (
+                                <span className="ml-auto text-pink-300" title="Sincronizando con la tienda virtual…">
+                                    <RefreshCw size={12} className="animate-spin" />
+                                </span>
+                            )}
+                            {path === '/sync' && !syncAuto.enCurso && syncAuto.ultimoError && (
+                                <span className="ml-auto bg-red-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full"
+                                    title={`Última sincronización con error: ${syncAuto.ultimoError}`}>
+                                    !
+                                </span>
+                            )}
+                            {path === '/sync' && !syncAuto.enCurso && !syncAuto.ultimoError && syncAuto.auto && (
+                                <span className="ml-auto w-2 h-2 rounded-full bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.8)]"
+                                    title={`Sync automática activa · última OK: ${syncAuto.ultimaOk ? String(syncAuto.ultimaOk).replace('T', ' ').slice(0, 16) : 'nunca'}`} />
                             )}
                         </NavLink>
                     ))}
