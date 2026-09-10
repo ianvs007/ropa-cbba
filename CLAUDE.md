@@ -12,14 +12,23 @@ el 22/08/2026 la identidad de cruce con la nube es el `globalId` (UUID estable).
 - **Idioma**: código, commits, tests y UI en español. Commits `tipo(ámbito): ...`
   separados por unidad lógica. Sin comillas dobles dentro de mensajes de commit
   (PowerShell 5.1 las rompe al pasarlas a git).
-- **NUNCA hacer push** sin revisión de Alain. Los merges a main se hacen solo
-  cuando él lo pide.
+- **Repositorio**: este directorio es su PROPIO repo git (`main`), remoto
+ `origin = https://github.com/ianvs007/ropa-cbba.git`, desde el 10/09/2026
+ (antes vivía como subcarpeta del repo raíz `D:\software\MisProyectos`, que
+ ahora lo ignora en su `.gitignore`, igual que a la tienda virtual). La nube es
+ `ianvs007/tienda-virtual`. La sincronización de código con GitHub se hace a
+ los `main` respectivos.
+- **Push a `main`** solo cuando Alain lo pide (el 10/09/2026 pidió sincronizar
+ ambos sistemas a GitHub); los commits locales se acumulan hasta entonces.
 - **dist/ está versionado**: se commitea SOLO en commits de build para despliegue
-  (`build: regenerar dist ...`). Los builds de verificación se descartan con
-  `git checkout -- dist; git clean -fd dist`.
-- **Despliegue**: zip en `D:\software\MisProyectos\` (`ropa-cbba-*-YYYYMMDD.zip`)
-  excluyendo `node_modules`, `.git`, `.claude` y `backup_tienda_ropa_*.json`;
-  se copia a mano a las 3 máquinas (no hacen git pull).
+ (`build: regenerar dist ...`). Los builds de verificación se descartan con
+ `git checkout -- dist; git clean -fd dist`.
+- **Despliegue**: Alain NO quiere zips del sistema completo (10/09/2026); el
+ código se distribuye desde GitHub (`main` con `dist/` versionado). El zip v8
+ armado ese día (`ropa-cbba-v8-sync-eventos-20260910.zip`) queda solo como
+ respaldo. Las máquinas de la tienda no hacen `git pull` por sí solas: la
+ instalación en la central sigue siendo manual (copiar/clonar `main` y lanzar
+ `iniciar-servicio-silencioso.bat`).
 - **Tests**: `npx vitest run` (entorno node, funciones puras — la lógica testeable
   se extrae a `src/utils/` o se exporta del hook). Toda la suite en verde +
   `npm run build` antes de commitear. **218 tests** versionados al 2026-09-07
@@ -465,16 +474,19 @@ se resuelve volviendo a sincronizar.
  `finalizarSesion`); endpoints `/api/sync/v2/{eventos,snapshot,ack,finalizar}`.
  34/34 tests + build OK. Los endpoints viejos siguen vivos.
 
-**Orden de despliegue OBLIGATORIO** (Alain decide cuándo):
-1. Aplicar la migración 006 en D1 remoto ANTES del push (si el código nuevo
- llega sin `stock_eventos`, el INSERT del checkout falla y nadie puede
- comprar). `wrangler d1 migrations apply tienda-virtual-db --remote`, o el SQL
- por MCP + `INSERT INTO d1_migrations (name) VALUES ('006_sync_eventos.sql')`.
-2. Push de la nube → Cloudflare Pages despliega.
-3. Zip v8 a la máquina CENTRAL (lanzar el POS v8 completo, no copiar archivos
- sueltos: el volcado del 10/09 dio 0/2592 `global_id`, señal de que la central
- corre una BD v22). Primera sync: el bootstrap adopta por `codigo` los
- productos de la nube sin `global_id`; luego todo cruza por identidad.
-4. Encender la sync automática en `/sync` (solo la central).
+**Orden de despliegue OBLIGATORIO** (estado al 10/09/2026 17:45):
+1. ✅ Migración 006 aplicada en D1 remoto (por MCP de Cloudflare, `wrangler`
+ seguía con auth 10000) y registrada en `d1_migrations`; verificadas las 2
+ tablas, 3 índices y la columna `products.sesion_snapshot`.
+2. ✅ Push de la nube (`2fe04dd..21bb523` → `main`); Cloudflare Pages despliega
+ solo. Pendiente confirmar en vivo que `/api/sync/v2/eventos` responde.
+3. ✅ POS publicado en GitHub: `ianvs007/ropa-cbba` `main` `1566ed0..f14ee57`
+ (la historia local de `tienda de ropas` se rebasó sobre el `main` remoto; el
+ árbol final es idéntico al local). ⏳ Instalar `main` en la máquina CENTRAL
+ (lanzar el POS completo, no copiar archivos sueltos: el volcado del 10/09 dio
+ 0/2592 `global_id`, señal de que la central corre una BD v22). Primera sync:
+ el bootstrap adopta por `codigo` los productos de la nube sin `global_id`;
+ luego todo cruza por identidad.
+4. ⏳ Encender la sync automática en `/sync` (solo la central).
 Pendiente conocido (no resuelto por diseño): prendas multi-unidad — la etiqueta
 física no coincide con el código web (598 etiquetas del dump de desarrollo).
