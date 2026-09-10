@@ -431,3 +431,50 @@ alineación en `Sync.jsx`; (c) recién entonces el ritual en la tienda — zip a
 central → sync → vaciado total del catálogo cloud + re-sync → alinear → re-sync →
 volcado nuevo y `node comparar-dump-nube.cjs` + `node simular-alineacion.mjs`
 para remedir.
+
+### ✅ Sincronización v2 por eventos — implementada, SIN desplegar (10/09/2026)
+
+Diseño en `docs/DISENO_SYNC_EVENTOS.md` (aprobado por Alain). Reemplaza el
+protocolo de cutoff por fecha: la nube registra cada venta/cancelación/expiración
+web como evento con id creciente; el POS los baja, los aplica con idempotencia
+por id (tabla `webEventos`) y confirma (`ack`); el snapshot de stock cruza SOLO
+por `globalId` y la nube publica `stock_pos + Σ eventos sin ack`. Cualquier corte
+se resuelve volviendo a sincronizar.
+
+21. **POS** (`55671d3e`..`c3b1757f`): schema **v24** (`webEventos: 'id, tipo,
+ productId, pedidoRef, aplicadoEn'`, sin upgrade; viaja en backup/restore);
+ `utils/syncV2.js` (puro: `armarFilasSnapshot`, `planificarAplicacionEventos`,
+ `debeSincronizarAuto`, 18 tests); `utils/syncV2Cliente.js` (`sincronizarV2`:
+ pull→push 250/lote→finalizar→pull corto, reintentos en red/5xx, mutex,
+ `syncV2.ultimaOk/ultimoError`); helpers Dexie `garantizarGlobalIds`,
+ `obtenerConfigSyncV2`, `idsEventosYaAplicados`, `aplicarPlanEventos` (UNA
+ transacción; marca `barcodes.usedRef = 'WEB #REF'` para poder liberar la
+ unidad correcta al cancelar); `Sync.jsx` reescrito (estado, fases, resultado,
+ toggle de **sync automática** + intervalo); hook `useSyncAutomatica` en
+ `Layout` (solo admin, tick por minuto, indicador en el menú). RETIRADOS:
+ `syncGuard.js`, `syncAplicar.js`, importación Excel de ventas
+ (`parsearVentasEnLinea`/`cruzarVentas`/`ventasDesdeApi`) y
+ `ultimaImportacionVentas`. **245 tests** + build OK. Zip
+ **`ropa-cbba-v8-sync-eventos-20260910.zip`** (1.39 MB, 164 entradas, desde
+ `git archive` del árbol versionado, sin backup JSON).
+22. **Nube** (`932f961`..`99761de`, en `main` local, **SIN push**): migración
+ `006_sync_eventos.sql` (`stock_eventos`, `sync_dispositivos`,
+ `products.sesion_snapshot`); `lib/eventos.js` (evento en el MISMO batch que el
+ stock en checkout/expiración/cancelación); `lib/syncV2.js`
+ (`planificarSnapshot` pura + `aplicarSnapshot`/`confirmarEventos`/
+ `finalizarSesion`); endpoints `/api/sync/v2/{eventos,snapshot,ack,finalizar}`.
+ 34/34 tests + build OK. Los endpoints viejos siguen vivos.
+
+**Orden de despliegue OBLIGATORIO** (Alain decide cuándo):
+1. Aplicar la migración 006 en D1 remoto ANTES del push (si el código nuevo
+ llega sin `stock_eventos`, el INSERT del checkout falla y nadie puede
+ comprar). `wrangler d1 migrations apply tienda-virtual-db --remote`, o el SQL
+ por MCP + `INSERT INTO d1_migrations (name) VALUES ('006_sync_eventos.sql')`.
+2. Push de la nube → Cloudflare Pages despliega.
+3. Zip v8 a la máquina CENTRAL (lanzar el POS v8 completo, no copiar archivos
+ sueltos: el volcado del 10/09 dio 0/2592 `global_id`, señal de que la central
+ corre una BD v22). Primera sync: el bootstrap adopta por `codigo` los
+ productos de la nube sin `global_id`; luego todo cruza por identidad.
+4. Encender la sync automática en `/sync` (solo la central).
+Pendiente conocido (no resuelto por diseño): prendas multi-unidad — la etiqueta
+física no coincide con el código web (598 etiquetas del dump de desarrollo).
