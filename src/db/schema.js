@@ -471,3 +471,34 @@ db.version(23).stores({
         }
     }
 });
+
+// ==============================================================================
+// 🔄 ESQUEMA v24 — SINCRONIZACIÓN v2 POR EVENTOS (docs/DISENO_SYNC_EVENTOS.md)
+// ==============================================================================
+// `webEventos`: un registro por evento de stock de la tienda virtual (venta,
+// cancelación, expiración) YA aplicado en este POS. La clave primaria es el id
+// del evento en la nube (NO autoincremental): aplicar dos veces el mismo evento
+// es imposible por construcción, sin depender de fechas ni banderas.
+// Sin .upgrade(): la tabla nace vacía y el resto de stores no cambia.
+db.version(24).stores({
+    products: '++id, globalId, name, barcode, category, brand, size, color, stock, cost, price, shortCode, active, createdAt, updatedAt, hasEmbedding',
+    kardex: '++id, productId, date, type',
+    sales: '++id, date, total, sellerId, paymentMethod, status, shiftId',
+    expenseCategories: '++id, name',
+    expenses: '++id, date, categoryId, amount, paymentMethod, userId, registeredBy, shiftId',
+    users: '++id, username, role',
+    settings: 'key',
+    reservations: '++id, clientName, clientPhone, productId, status, createdAt, sellerId',
+    reservationPayments: '++id, reservationId, date, status, userId, shiftId',
+    categories: '++id, name',
+    productNames: '++id, name',
+    productFields: '++id, name, type',
+    barcodes: '++id, productId, barcode, shortCode, used, createdAt',
+    brands: '++id, name',
+    colors: '++id, name',
+    cashClosures: '++id, date, userId, closedAt, openingId',
+    cashClosureHistory: '++id, closureId, date, changedBy',
+    securityLogs: '++id, timestamp, eventType, userId',
+    cashOpenings: '++id, date, userId, openedAt',
+    webEventos: 'id, tipo, productId, pedidoRef, aplicadoEn',
+});

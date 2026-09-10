@@ -385,7 +385,8 @@ export async function exportDatabase() {
     const [
         products, kardex, sales, expenseCategories, expenses,
         users, settingsRaw, reservations, reservationPayments,
-        categories, productNames, productFields, barcodes, brands, colors
+        categories, productNames, productFields, barcodes, brands, colors,
+        webEventos,
     ] = await Promise.all([
         db.products.toArray(),
         db.kardex.toArray(),
@@ -402,6 +403,7 @@ export async function exportDatabase() {
         db.barcodes.toArray(),
         db.brands.toArray(),
         db.colors.toArray(),
+        db.webEventos.toArray(),
     ]);
 
     // Asegurar que cada producto tenga globalId y updatedAt
@@ -420,6 +422,9 @@ export async function exportDatabase() {
             products: productsWithGlobalId, kardex, sales, expenseCategories, expenses,
             users: safeUsers, settings: settingsRaw, reservations, reservationPayments,
             categories, productNames, productFields, barcodes, brands, colors,
+            // Sync v2: los eventos web ya aplicados viajan con el backup para que
+            // una restauración no vuelva a descontar las mismas ventas.
+            webEventos,
         },
     };
 }
@@ -432,7 +437,7 @@ export async function importDatabase(backupObj) {
         db.expenseCategories, db.expenses, db.settings,
         db.reservations, db.reservationPayments, db.categories,
         db.productNames, db.productFields, db.barcodes,
-        db.brands, db.colors,
+        db.brands, db.colors, db.webEventos,
         async () => {
             if (data.products) {
                 await db.products.clear();
@@ -481,6 +486,7 @@ export async function importDatabase(backupObj) {
             if (data.barcodes) { await db.barcodes.clear(); await db.barcodes.bulkAdd(data.barcodes); }
             if (data.brands) { await db.brands.clear(); await db.brands.bulkAdd(data.brands); }
             if (data.colors) { await db.colors.clear(); await db.colors.bulkAdd(data.colors); }
+            if (data.webEventos) { await db.webEventos.clear(); await db.webEventos.bulkPut(data.webEventos); }
         }
     );
 }
