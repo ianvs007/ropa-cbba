@@ -1,9 +1,9 @@
 import React from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, getLocalISOString, fixDuplicateProductShortCodes } from '../db';
+import { db, getLocalISOString, fixDuplicateProductShortCodes, previsualizarAlineacionEtiquetas, alinearCodigosEtiquetas } from '../db';
 import {
     RefreshCw, Download, Upload, FileSpreadsheet, AlertTriangle,
-    CheckCircle, X, Loader2, Globe, KeyRound, Pencil, Zap, Wrench
+    CheckCircle, X, Loader2, Globe, KeyRound, Pencil, Zap, Wrench, Tags
 } from 'lucide-react';
 import { useNotification } from '../hooks/useNotification';
 import {
@@ -11,6 +11,11 @@ import {
     codigosDuplicadosEnFilas
 } from '../utils/syncExcel';
 import { aplicarVentas } from '../utils/syncAplicar';
+import {
+    CLAVE_VENTAS_WEB_PENDIENTES,
+    CLAVE_SYNC_DESCUENTO_PENDIENTE,
+    estadoBloqueoSyncPorDescuentoPendiente,
+} from '../utils/syncGuard';
 
 /** URL por defecto de la tienda virtual (configurable en la tarjeta ③) */
 const URL_TIENDA_DEFAULT = 'https://tienda-virtual-26n.pages.dev';
@@ -40,6 +45,12 @@ export default function Sync() {
     const [reparandoDuplicados, setReparandoDuplicados] = React.useState(false);
     const [reparacionDuplicados, setReparacionDuplicados] = React.useState(null); // reasignaciones hechas
 
+    // ── Estado: alineación etiqueta ↔ producto (prendas únicas) ──
+    const [previaAlineacion, setPreviaAlineacion] = React.useState(null); // plan {reasignaciones,bloqueos,resumen}
+    const [calculandoAlineacion, setCalculandoAlineacion] = React.useState(false);
+    const [aplicandoAlineacion, setAplicandoAlineacion] = React.useState(false);
+    const [resultadoAlineacion, setResultadoAlineacion] = React.useState(null);
+
     // ── Estado: importación ──
     const fileInputRef = React.useRef(null);
     const [archivo, setArchivo] = React.useState(null);      // nombre del archivo elegido
@@ -52,6 +63,10 @@ export default function Sync() {
     const syncUrlSetting = useLiveQuery(() => db.settings.get('syncUrl'), []);
     const syncTokenSetting = useLiveQuery(() => db.settings.get('syncToken'), []);
     const ultimaSyncSetting = useLiveQuery(() => db.settings.get('ultimaSyncDirecta'), []);
+    const descuentoPendienteFlag = useLiveQuery(() => db.settings.get(CLAVE_SYNC_DESCUENTO_PENDIENTE), []);
+    const ventasPendientesSetting = useLiveQuery(() => db.settings.get(CLAVE_VENTAS_WEB_PENDIENTES), []);
+    const [ultimaSyncLocal, setUltimaSyncLocal] = React.useState(null); // refuerzo visual tras sync
+    const [reintentandoDescuento, setReintentandoDescuento] = React.useState(false);
     const [editandoConfig, setEditandoConfig] = React.useState(false);
     const [urlInput, setUrlInput] = React.useState(URL_TIENDA_DEFAULT);
     const [tokenInput, setTokenInput] = React.useState('');
@@ -61,6 +76,13 @@ export default function Sync() {
     const [resultadoDirecta, setResultadoDirecta] = React.useState(null); // resumen tras sincronizar
 
     const configOk = Boolean(syncUrlSetting?.value && syncTokenSetting?.value);
+    const bloqueoDescuento = React.useMemo(
+        () => estadoBloqueoSyncPorDescuentoPendiente(
+            descuentoPendienteFlag?.value,
+            ventasPendientesSetting?.value,
+        ),
+        [descuentoPendienteFlag, ventasPendientesSetting],
+    );
 
     // Conteo de productos activos sin código corto (advertencia en tarjeta ①)
     const { totalExportables, sinCodigoCount } = React.useMemo(() => {
@@ -235,11 +257,128 @@ export default function Sync() {
         }
     };
 
+    // ══════════════════ ALINEAR ETIQUETA ↔ PRODUCTO ══════════════════
+    const handlePrevisualizarAlineacion = async () => {
+        setCalculandoAlineacion(true);
+        setResultadoAlineacion(null);
+        try {
+            const plan = await previsualizarAlineacionEtiquetas();
+            setPreviaAlineacion(plan);
+            if ((plan.reasignaciones?.length || 0) === 0 && (plan.bloqueos?.length || 0) === 0) {
+                showMsg('success', 'No hay prendas únicas por alinear: ya coinciden con su etiqueta o son multi-unidad.');
+            }
+        } catch (err) {
+            console.error(err);
+            showMsg('error', err?.message || 'No se pudo calcular la alineación');
+        } finally {
+            setCalculandoAlineacion(false);
+        }
+    };
+
+    const handleAplicarAlineacion = async () => {
+        const plan = previaAlineacion;
+        if (!plan) return;
+        const n = plan.reasignaciones?.length || 0;
+        const bloqueos = plan.bloqueos?.length || 0;
+        const confirmado = window.confirm(
+            `Se van a reasignar ${n} código(s) de producto para que coincidan con la etiqueta física impresa.\n` +
+            (bloqueos > 0 ? `Hay ${bloqueos} bloqueo(s) que NO se tocarán (etiquetas o códigos duplicados: repáralos antes).\n` : '') +
+            `\nLas etiquetas ya impresas NO se reimprimen: el producto adopta el número de la etiqueta.\n` +
+            `Prendas con varias unidades NO se alinean (quedan igual).\n\n` +
+            `Después debes sincronizar de nuevo con la tienda virtual.\n\n¿Continuar?`
+        );
+        if (!confirmado) return;
+
+        setAplicandoAlineacion(true);
+        try {
+            const aplicado = await alinearCodigosEtiquetas();
+            setResultadoAlineacion(aplicado);
+            setPreviaAlineacion(null);
+            showMsg('success', aplicado.reasignaciones.length > 0
+                ? `Alineación lista: ${aplicado.reasignaciones.length} prenda(s) actualizadas ✓ Ahora sincroniza con la nube.`
+                : 'No había reasignaciones pendientes ✓');
+        } catch (err) {
+            console.error(err);
+            showMsg('error', err?.message || 'No se pudo aplicar la alineación');
+        } finally {
+            setAplicandoAlineacion(false);
+        }
+    };
+
+    const aplicarVentasWebLocal = async (ventasApi) => {
+        const { ventas, errores: errParse } = ventasDesdeApi(ventasApi);
+        const [productosFrescos, ultima] = await Promise.all([
+            db.products.toArray(),
+            db.settings.get('ultimaImportacionVentas'),
+        ]);
+        const cruzadas = cruzarVentas(ventas, productosFrescos, ultima?.value || null);
+        const aplicado = await aplicarVentas(cruzadas);
+        const aplicables = cruzadas.filter(f => f.aDescontar > 0);
+        for (const fila of aplicables) {
+            if (fila.productId) {
+                await db.products.update(fila.productId, {
+                    updatedAt: new Date().toISOString(),
+                });
+            }
+        }
+        return {
+            ventasLen: ventas.length,
+            unidades: aplicado.unidades,
+            aplicablesLen: aplicables.length,
+            avisosVentas: cruzadas.filter(f => f.aviso).length,
+            errores: errParse,
+        };
+    };
+
+    const limpiarDescuentoPendiente = async () => {
+        await db.settings.delete(CLAVE_SYNC_DESCUENTO_PENDIENTE);
+        await db.settings.delete(CLAVE_VENTAS_WEB_PENDIENTES);
+    };
+
+    const marcarDescuentoPendiente = async (ventasApi) => {
+        await db.settings.put({ key: CLAVE_SYNC_DESCUENTO_PENDIENTE, value: '1' });
+        await db.settings.put({
+            key: CLAVE_VENTAS_WEB_PENDIENTES,
+            value: JSON.stringify(Array.isArray(ventasApi) ? ventasApi : []),
+        });
+    };
+
+    const handleReintentarDescuentoLocal = async () => {
+        let lista = [];
+        try {
+            const raw = ventasPendientesSetting?.value;
+            lista = typeof raw === 'string' ? JSON.parse(raw) : (Array.isArray(raw) ? raw : []);
+        } catch {
+            lista = [];
+        }
+        if (!Array.isArray(lista) || lista.length === 0) {
+            await limpiarDescuentoPendiente();
+            showMsg('success', 'No había ventas pendientes. Ya puedes sincronizar de nuevo.');
+            return;
+        }
+        setReintentandoDescuento(true);
+        try {
+            const r = await aplicarVentasWebLocal(lista);
+            await limpiarDescuentoPendiente();
+            showMsg('success',
+                `✓ Descuento local recuperado: ${r.unidades} ítem(s) web descontados. Ya puedes sincronizar.`);
+        } catch (err) {
+            console.error(err);
+            showMsg('error', `Sigue fallando el descuento local: ${err?.message || err}`);
+        } finally {
+            setReintentandoDescuento(false);
+        }
+    };
+
     const handleSincronizarAhora = async () => {
         const base = (syncUrlSetting?.value || URL_TIENDA_DEFAULT).replace(/\/+$/, '');
         const token = syncTokenSetting?.value;
         if (!base || !token) {
             showMsg('error', 'Configura primero la URL y el token de la tienda');
+            return;
+        }
+        if (bloqueoDescuento.bloqueado) {
+            showMsg('error', bloqueoDescuento.motivo);
             return;
         }
 
@@ -273,11 +412,11 @@ export default function Sync() {
             // web, la tienda la CREA en el mismo clic (carga inicial incluida).
             const filas = filasStock.map(({ globalId, codigo, nombre, talla, color, stock, precio }) => ({ globalId, codigo, nombre, talla, color, stock, precio }));
 
-            // b) POST a la API en LOTES de 250 para mostrar el avance en %.
+            // b) POST a la API en LOTES de 100 para mostrar el avance en %.
             // Solo el último lote va con finalizar: true (la tienda recién ahí
             // cierra la ventana de ventas y las devuelve). Reintentar tras un
             // fallo es seguro: lo ya creado/ajustado se recalcula igual.
-            const TAM_LOTE = 250;
+            const TAM_LOTE = 100;
             let creadas = 0, actualizadas = 0, advertencias = 0;
             const detalleAvisos = [];
             const duplicadosApi = [];  // códigos repetidos detectados por la nube
@@ -296,8 +435,9 @@ export default function Sync() {
                         },
                         body: JSON.stringify({ filas: filas.slice(i, i + TAM_LOTE), finalizar: esUltimo }),
                     });
-                } catch {
-                    throw new Error('Sin internet o la tienda está caída. Revisa tu conexión y vuelve a presionar "Sincronizar ahora": continuará sin duplicar nada.');
+                } catch (errFetch) {
+                    console.error('Fallo de red/CORS en /api/sync:', errFetch);
+                    throw new Error('No se pudo contactar la tienda (red o CORS). Si la web abre en el navegador, reintenta: un lote falló a mitad.');
                 }
                 if (resp.status === 401) throw new Error('Token inválido: revísalo en el admin web → Ajustes.');
                 if (resp.status === 503) throw new Error('La tienda aún no tiene token configurado (admin web → Ajustes).');
@@ -305,47 +445,38 @@ export default function Sync() {
                     const data400 = await resp.json().catch(() => null);
                     throw new Error(`La tienda rechazó las filas: ${data400?.error || 'datos inválidos'}.`);
                 }
-                if (!resp.ok) throw new Error(`La tienda respondió con error ${resp.status}. Vuelve a presionar "Sincronizar ahora": continuará sin duplicar nada.`);
+                if (!resp.ok) {
+                    const cuerpo = await resp.text().catch(() => '');
+                    console.error(`HTTP ${resp.status} en /api/sync:`, cuerpo);
+                    throw new Error(
+                        `La tienda respondió error ${resp.status} en el lote ${Math.floor(i / TAM_LOTE) + 1}. ` +
+                        `${(cuerpo || '').slice(0, 180) || 'Sin detalle'}. Vuelve a sincronizar.`
+                    );
+                }
                 const data = await resp.json();
                 creadas += data.creadas ?? 0;
                 actualizadas += data.actualizadas ?? 0;
                 advertencias += (data.advertencias ?? 0) + (Array.isArray(data.avisosImportacion) ? data.avisosImportacion.length : 0);
-                if (Array.isArray(data.detalle)) detalleAvisos.push(...data.detalle.filter(d => d.aviso));
+                if (Array.isArray(data.detalle)) {
+                    for (const d of data.detalle) {
+                        if (d?.aviso && detalleAvisos.length < 100) detalleAvisos.push(d);
+                    }
+                }
                 if (Array.isArray(data.duplicados)) duplicadosApi.push(...data.duplicados);
                 if (Array.isArray(data.cruces)) crucesApi.push(...data.cruces);
-                if (esUltimo) ventasApi = data.ventas || [];
+                if (esUltimo) ventasApi = data.ventas || data.ventasPostCutoff || [];
                 setProgresoDirecta({ hechas: Math.min(i + TAM_LOTE, filas.length), total: filas.length });
             }
 
-            // c) Aplicar las ventas devueltas con la MISMA lógica de la tarjeta ②.
-            // El guard `ultimaImportacionVentas` (que actualiza `aplicarVentas`)
-            // evita el doble descuento si se reintenta tras un fallo a mitad de camino.
-            const { ventas, errores } = ventasDesdeApi(ventasApi);
-            const [productosFrescos, ultima] = await Promise.all([
-                db.products.toArray(),
-                db.settings.get('ultimaImportacionVentas'),
-            ]);
-            const cruzadas = cruzarVentas(ventas, productosFrescos, ultima?.value || null);
-            const { unidades } = await aplicarVentas(cruzadas);
-
-            // Actualizar updatedAt en productos modificados por ventas web
-            for (const fila of cruzadas) {
-                if (fila.aDescontar > 0) {
-                    const product = await db.products.get(fila.productId);
-                    if (product) {
-                        await db.products.update(product.id, {
-                            updatedAt: new Date().toISOString(),
-                        });
-                    }
-                }
-            }
-
-            // d) Persistir la fecha de la última sync directa exitosa
+            // Marca local apenas la nube respondió OK (antes de aplicar ventas).
             const fechaSync = getLocalISOString();
             await db.settings.put({ key: 'ultimaSyncDirecta', value: fechaSync });
+            setUltimaSyncLocal(fechaSync);
 
-            const aplicables = cruzadas.filter(f => f.aDescontar > 0);
+            // Mostrar YA el resultado de la nube: si el descuento local se cuelga,
+            // el usuario no se queda con la barra al 100% y sin mensaje.
             setResultadoDirecta({
+                fecha: fechaSync,
                 creadas,
                 actualizadas,
                 advertencias,
@@ -353,18 +484,68 @@ export default function Sync() {
                 duplicados: duplicadosApi,
                 cruces: crucesApi,
                 omitidos: sinCodigo.length,
-                ventasRecibidas: ventas.length,
-                ventasAplicadas: aplicables.length,
-                unidades,
-                avisosVentas: cruzadas.filter(f => f.aviso).length,
-                erroresVentas: errores,
+                ventasRecibidas: Array.isArray(ventasApi) ? ventasApi.length : 0,
+                ventasAplicadas: 0,
+                unidades: 0,
+                avisosVentas: 0,
+                erroresVentas: [],
+                fase: 'nube_ok',
             });
             showMsg('success',
-                `✓ Sincronizado: ${creadas ? `${creadas} prendas nuevas creadas en la web · ` : ''}` +
-                `${actualizadas} variantes ajustadas en la web · ` +
-                `${unidades} ítem(s) vendidos web descontados localmente`);
+                `✓ Nube actualizada (${String(fechaSync).replace('T', ' ').slice(0, 19)}). ` +
+                `Aplicando ${(ventasApi || []).length} venta(s) web en el POS…`);
+
+            // c) Aplicar ventas locales (separado: un fallo aquí ya no oculta el éxito en nube)
+            let unidades = 0;
+            let ventasLen = 0;
+            let aplicablesLen = 0;
+            let avisosVentas = 0;
+            let errores = [];
+            let descuentoOk = false;
+            try {
+                const r = await aplicarVentasWebLocal(ventasApi);
+                unidades = r.unidades;
+                ventasLen = r.ventasLen;
+                aplicablesLen = r.aplicablesLen;
+                avisosVentas = r.avisosVentas;
+                errores = r.errores;
+                descuentoOk = true;
+                await limpiarDescuentoPendiente();
+            } catch (errLocal) {
+                console.error('Error aplicando ventas web en el POS:', errLocal);
+                errores = [...errores, `Descuento local: ${errLocal?.message || String(errLocal)}`];
+                await marcarDescuentoPendiente(ventasApi);
+                showMsg('error',
+                    `La nube sí se actualizó, pero falló el descuento local. ` +
+                    `NO vuelvas a sincronizar todavía: usa "Reintentar descuento local". (${errLocal?.message || errLocal})`);
+            }
+
+            setResultadoDirecta({
+                fecha: fechaSync,
+                creadas,
+                actualizadas,
+                advertencias,
+                detalle: detalleAvisos,
+                duplicados: duplicadosApi,
+                cruces: crucesApi,
+                omitidos: sinCodigo.length,
+                ventasRecibidas: ventasLen || (Array.isArray(ventasApi) ? ventasApi.length : 0),
+                ventasAplicadas: aplicablesLen,
+                unidades,
+                avisosVentas,
+                erroresVentas: errores,
+                fase: descuentoOk ? 'completo' : 'descuento_pendiente',
+            });
+            if (descuentoOk) {
+                showMsg('success',
+                    `✓ Sincronizado (${String(fechaSync).replace('T', ' ').slice(0, 19)}): ` +
+                    `${creadas ? `${creadas} prendas nuevas · ` : ''}` +
+                    `${actualizadas} variantes ajustadas · ` +
+                    `${unidades} ítem(s) web descontados localmente`);
+            }
         } catch (err) {
-            showMsg('error', err.message);
+            console.error('Error en sincronización directa:', err);
+            showMsg('error', err?.message || String(err) || 'Error desconocido al sincronizar');
         } finally {
             setSincronizando(false);
             setProgresoDirecta(null);
@@ -387,6 +568,30 @@ export default function Sync() {
                         : 'bg-red-50 border border-red-200 text-red-700'}`}>
                     {msg.type === 'success' ? <CheckCircle size={16} /> : <X size={16} />}
                     {msg.text}
+                </div>
+            )}
+
+            {bloqueoDescuento.bloqueado && (
+                <div className="mb-4 bg-red-50 border-2 border-red-400 rounded-xl p-4 fade-in">
+                    <div className="flex items-start gap-3">
+                        <AlertTriangle size={22} className="text-red-600 shrink-0 mt-0.5" />
+                        <div className="flex-1">
+                            <p className="font-black text-red-800 uppercase tracking-tight">
+                                Sync bloqueada: descuento local pendiente
+                            </p>
+                            <p className="text-xs text-red-700 mt-1">{bloqueoDescuento.motivo}</p>
+                            {bloqueoDescuento.cantidad > 0 && (
+                                <p className="text-xs text-red-600 mt-1 font-semibold">
+                                    Ventas web pendientes de aplicar: {bloqueoDescuento.cantidad}
+                                </p>
+                            )}
+                            <button onClick={handleReintentarDescuentoLocal} disabled={reintentandoDescuento}
+                                className="mt-3 flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold bg-red-600 text-white hover:bg-red-700 transition-all disabled:opacity-60">
+                                {reintentandoDescuento ? <Loader2 size={16} className="animate-spin" /> : <Wrench size={16} />}
+                                {reintentandoDescuento ? 'Reintentando…' : 'Reintentar descuento local'}
+                            </button>
+                        </div>
+                    </div>
                 </div>
             )}
 
@@ -463,6 +668,84 @@ export default function Sync() {
                 </div>
             )}
 
+            {/* ══════════ ALINEACIÓN ETIQUETA ↔ PRODUCTO ══════════ */}
+            <div className="fashion-card p-6 mb-4 border-2 border-amber-300 relative fade-in">
+                <div className="flex items-center gap-3 mb-3">
+                    <div className="w-10 h-10 rounded-xl bg-amber-500 flex items-center justify-center shrink-0">
+                        <Tags size={18} strokeWidth={1.8} className="text-white" />
+                    </div>
+                    <div>
+                        <h2 className="font-black text-amber-950 uppercase tracking-tight">Alinear etiqueta ↔ producto</h2>
+                        <p className="text-xs text-amber-700 font-medium">
+                            En prendas de 1 unidad, el código web pasa a ser el de la etiqueta ya impresa
+                        </p>
+                    </div>
+                </div>
+                <p className="text-xs text-amber-800 mb-4">
+                    Usa esto DESPUÉS de instalar esta actualización y ANTES o DESPUÉS del vaciado+resync de la nube.
+                    No reimprime etiquetas. Las prendas con varias unidades no se tocan.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                    <button onClick={handlePrevisualizarAlineacion}
+                        disabled={calculandoAlineacion || aplicandoAlineacion}
+                        className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold bg-amber-600 text-white hover:bg-amber-700 transition-all disabled:opacity-60">
+                        {calculandoAlineacion ? <Loader2 size={16} className="animate-spin" /> : <Tags size={16} />}
+                        {calculandoAlineacion ? 'Calculando…' : 'Previsualizar alineación'}
+                    </button>
+                    {previaAlineacion && (previaAlineacion.reasignaciones?.length || 0) > 0 && (
+                        <button onClick={handleAplicarAlineacion}
+                            disabled={aplicandoAlineacion}
+                            className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold bg-green-700 text-white hover:bg-green-800 transition-all disabled:opacity-60">
+                            {aplicandoAlineacion ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
+                            {aplicandoAlineacion ? 'Aplicando…' : `Aplicar ${previaAlineacion.reasignaciones.length} cambio(s)`}
+                        </button>
+                    )}
+                </div>
+
+                {previaAlineacion && (
+                    <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 space-y-2">
+                        <p className="font-bold">
+                            Vista previa · alineaciones: {previaAlineacion.resumen?.alineadas ?? 0} ·
+                            desalojos: {previaAlineacion.resumen?.desalojadas ?? 0} ·
+                            ya OK: {previaAlineacion.resumen?.yaAlineadas ?? 0} ·
+                            multi-unidad: {previaAlineacion.resumen?.variasUnidades ?? 0} ·
+                            bloqueos: {previaAlineacion.bloqueos?.length ?? 0}
+                        </p>
+                        {(previaAlineacion.reasignaciones || []).slice(0, 25).map(r => (
+                            <p key={`${r.id}-${r.codigoNuevo}`}>
+                                <span className="font-bold">{r.name}</span>{' '}
+                                <span className="font-mono line-through text-red-500">{r.codigoAnterior || '(vacío)'}</span>
+                                {' → '}
+                                <span className="font-mono font-black">{r.codigoNuevo}</span>
+                                <span className="text-amber-600"> ({r.motivo})</span>
+                            </p>
+                        ))}
+                        {(previaAlineacion.reasignaciones?.length || 0) > 25 && (
+                            <p className="text-amber-600">… y {previaAlineacion.reasignaciones.length - 25} más</p>
+                        )}
+                        {(previaAlineacion.bloqueos || []).slice(0, 10).map((b, i) => (
+                            <p key={`b-${b.id}-${i}`} className="text-red-700">
+                                Bloqueo: {b.name} ({b.codigo}) — {b.motivo}
+                            </p>
+                        ))}
+                    </div>
+                )}
+
+                {resultadoAlineacion && (
+                    <div className="mt-4 bg-green-50 border border-green-300 rounded-xl p-3 text-xs text-green-900">
+                        <p className="font-black uppercase tracking-tight mb-2">Alineación aplicada ✓</p>
+                        <p>
+                            {resultadoAlineacion.reasignaciones?.length || 0} reasignación(es).
+                            Ahora ve a "Sincronizar ahora" para subir los códigos a la nube.
+                        </p>
+                        <button onClick={() => setResultadoAlineacion(null)}
+                            className="mt-2 text-green-600 hover:text-green-800 font-semibold">
+                            Cerrar
+                        </button>
+                    </div>
+                )}
+            </div>
+
             {/* ══════════ TARJETA ③ SINCRONIZACIÓN DIRECTA (RECOMENDADA) ══════════ */}
             <div className="fashion-card p-6 mb-4 border-2 border-pink-300 relative fade-in">
                 <span className="absolute -top-3 left-6 badge-rose shadow-sm">Recomendada</span>
@@ -531,13 +814,15 @@ export default function Sync() {
                     </div>
                 )}
 
-                {ultimaSyncSetting?.value && (
+                {(ultimaSyncLocal || ultimaSyncSetting?.value) && (
                     <p className="text-[11px] text-pink-400 font-semibold mb-4">
-                        Última sincronización directa: {String(ultimaSyncSetting.value).replace('T', ' ').slice(0, 19)}
+                        Última sincronización directa:{' '}
+                        {String(ultimaSyncLocal || ultimaSyncSetting?.value).replace('T', ' ').slice(0, 19)}
                     </p>
                 )}
 
-                <button onClick={handleSincronizarAhora} disabled={!configOk || sincronizando || editandoConfig}
+                <button onClick={handleSincronizarAhora}
+                    disabled={!configOk || sincronizando || editandoConfig || bloqueoDescuento.bloqueado}
                     className="btn-primary w-full flex items-center justify-center gap-2 py-3 disabled:opacity-60">
                     {sincronizando ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
                     {sincronizando ? 'Sincronizando…' : '🔄 Sincronizar ahora'}

@@ -27,6 +27,8 @@ export {
     shortCodeExists,
     findDuplicateProductShortCodes,
     fixDuplicateProductShortCodes,
+    previsualizarAlineacionEtiquetas,
+    alinearCodigosEtiquetas,
     generateBarcodesForProduct,
     fixMissingShortCodes,
     discountStock,

@@ -1,6 +1,7 @@
 import { db } from './schema';
 import { filterClosureMovements } from '../utils/closureMovements';
 import { agruparDuplicadosProductos, planificarReasignacionDuplicados } from '../utils/duplicateShortCodes';
+import { planificarAlineacionEtiquetas } from '../utils/alinearCodigosEtiqueta';
 
 // ==============================================================================
 // 🔧 HELPERS — Funciones utilitarias de base de datos
@@ -140,6 +141,44 @@ export async function fixDuplicateProductShortCodes() {
             await db.products.update(r.id, { shortCode: r.codigoNuevo });
         }
         return reasignaciones;
+    });
+}
+
+/**
+ * Previsualiza la alineación etiqueta↔producto SIN tocar la BD.
+ * En prendas únicas, el producto adopta el shortCode de su etiqueta impresa.
+ *
+ * @returns {Promise<{reasignaciones, bloqueos, resumen}>}
+ */
+export async function previsualizarAlineacionEtiquetas() {
+    const [products, barcodes] = await Promise.all([
+        db.products.toArray(),
+        db.barcodes.toArray(),
+    ]);
+    return planificarAlineacionEtiquetas(products, barcodes);
+}
+
+/**
+ * Aplica la alineación etiqueta↔producto en UNA transacción Dexie.
+ * Solo cambia products.shortCode (las etiquetas físicas ya impresas no se tocan).
+ *
+ * @returns {Promise<{reasignaciones, bloqueos, resumen}>}
+ */
+export async function alinearCodigosEtiquetas() {
+    return db.transaction('rw', db.products, db.barcodes, async () => {
+        const [products, barcodes] = await Promise.all([
+            db.products.toArray(),
+            db.barcodes.toArray(),
+        ]);
+        const plan = planificarAlineacionEtiquetas(products, barcodes);
+        const ahora = new Date().toISOString();
+        for (const r of plan.reasignaciones) {
+            await db.products.update(r.id, {
+                shortCode: r.codigoNuevo,
+                updatedAt: ahora,
+            });
+        }
+        return plan;
     });
 }
 
