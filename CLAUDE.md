@@ -577,5 +577,30 @@ POS cerrado, en PowerShell dentro de `tienda de ropas-git`: `git status --short`
 Backup completo desde el POS. Nunca `git reset --hard`, `git stash pop` ni
 editar código en la central.
 Decisión de Alain (11/09): la nube sigue en fase de pruebas, el POS es la
-autoridad; el botón "Vaciar nube" es TEMPORAL hasta cerrar los pendientes del
-cruce.
+autoridad; el botón "Vaciar nube" era TEMPORAL y se RETIRÓ el 11/09 15:40
+(nube `c3c8579`, desplegado): podía romper una sesión de sync a mitad.
+
+### ⚠️ Cuota gratuita de D1 agotada (11/09/2026 15:50) — optimizada la nube, POS sin cambios
+
+25. **Síntoma**: login del admin web con `Unexpected token '<', "<!DOCTYPE "`
+ y `/api/productos?q=02797` con la página HTML "Error 1101" de Cloudflare.
+ **Causa**: D1 error 7500 — plan gratuito: **5 M filas leídas/día y 100 k
+ escritas/día**, reinicio a las 00:00 UTC (20:00 Bolivia). Estimación por
+ código: cada vista del catálogo ~8 k lecturas; cada sync completa ~75 k
+ lecturas (cada lote releía el catálogo entero) y ~10 k ESCRITURAS (UPDATE de
+ los 2647 productos para marcar `sesion_snapshot` + 3622 filas de etiquetas en
+ zona de aterrizaje + su borrado) aunque nada cambiara. La sync automática cada
+ 10 min habría reventado ambas cuotas a diario.
+ **Fix (solo nube, `ianvs007/tienda-virtual` `9747689..3d6f733`, pusheado)**:
+ lectura acotada al lote (IN por trozos de 100), presencia de sesión en 2 filas
+ de `settings` (`lib/sesionSync.js`), UPDATE de producto solo si cambia,
+ publicación de etiquetas por diferencias, caché de borde 60 s en
+ `GET /api/productos`, y todo error de `/api/*` en JSON (503 `d1_sin_cuota`
+ con mensaje claro). Ahora una sync ≈ 15 k lecturas y escribe solo lo que
+ cambió. 64/64 tests + build. **El protocolo no cambia: el POS `201f12e` sigue
+ válido, no hay que actualizar la central por esto.**
+ **Operativo**: hasta las 20:00 del 11/09 la nube sigue sin cuota (login y
+ búsqueda fallan con mensaje claro). Al encender la sync automática en la
+ central, usar **intervalo 15–30 min** (no el default de 10) para dejar margen
+ al catálogo público; el default sigue en 10 en `INTERVALO_AUTO_DEFAULT_MIN`.
+ Alternativa descartada por ahora (decisión de Alain): Workers Paid USD 5/mes.
