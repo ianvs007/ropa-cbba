@@ -2,11 +2,28 @@ import { describe, it, expect } from 'vitest';
 import {
     trocear,
     armarFilasSnapshot,
+    armarFilasEtiquetas,
+    normalizarEtiqueta,
     planificarAplicacionEventos,
     mensajeErrorHttp,
     debeSincronizarAuto,
     PREFIJO_REF_WEB,
+    TAM_LOTE_ETIQUETAS,
 } from '../utils/syncV2';
+
+// Fixture mínima tomada del dump real del POS (pos-productos.json, 09/09/2026):
+// dos productos y cuatro etiquetas. 02797 es a la vez etiqueta de una unidad de
+// VESTIDO BRILLO y código de MODELO de VESTIDO VICTORIANO.
+const FIXTURE_PRODUCTS = [
+    { id: 2087, globalId: 'g-brillo', name: 'VESTIDO BRILLO', shortCode: '02786', size: 'S', color: 'VARIOS', stock: 2, price: 388, active: true },
+    { id: 2098, globalId: 'g-victoriano', name: 'VESTIDO VICTORIANO', shortCode: '02797', size: 'S', color: 'CELESTE', stock: 1, price: 338, active: true },
+];
+const FIXTURE_BARCODES = [
+    { id: 2774, productId: 2087, barcode: '2007054225104', shortCode: '02796', used: false },
+    { id: 2775, productId: 2087, barcode: '2007054226118', shortCode: '02797', used: false },
+    { id: 2776, productId: 2087, barcode: '2007054226125', shortCode: '02798', used: true },
+    { id: 2796, productId: 2098, barcode: '2007952407329', shortCode: '02818', used: false },
+];
 
 const prod = (extra) => ({
     id: 1, globalId: 'g-1', shortCode: '00001', name: 'VESTIDO ROJO', size: 'M', color: 'ROJO',
@@ -47,6 +64,124 @@ describe('armarFilasSnapshot', () => {
         const r = armarFilasSnapshot([prod({ stock: -2.7, price: 'x' })]);
         expect(r.filas[0].stock).toBe(0);
         expect(r.filas[0].precio).toBe(0);
+    });
+});
+
+describe('normalizarEtiqueta (estricta, idéntica a la nube)', () => {
+    it('acepta 1 a 5 dígitos y conserva/rellena ceros a la izquierda', () => {
+        expect(normalizarEtiqueta('02797')).toBe('02797');
+        expect(normalizarEtiqueta('2797')).toBe('02797');
+        expect(normalizarEtiqueta(' 42 ')).toBe('00042');
+        expect(normalizarEtiqueta('00001')).toBe('00001');
+    });
+    it('nunca convierte un código inválido en válido', () => {
+        expect(normalizarEtiqueta('027970')).toBeNull();   // 6 dígitos: no se recorta
+        expect(normalizarEtiqueta('2797a')).toBeNull();    // letras: no se limpia
+        expect(normalizarEtiqueta('02 797')).toBeNull();
+        expect(normalizarEtiqueta('')).toBeNull();
+        expect(normalizarEtiqueta(null)).toBeNull();
+        expect(normalizarEtiqueta(undefined)).toBeNull();
+        expect(normalizarEtiqueta('2007054226118')).toBeNull(); // un EAN no es etiqueta corta
+    });
+});
+
+describe('armarFilasEtiquetas (payload real del POS a partir de products + barcodes)', () => {
+    it('caso 02797: cada etiqueta viaja con el globalId de SU producto y su disponibilidad', () => {
+        const r = armarFilasEtiquetas(FIXTURE_PRODUCTS, FIXTURE_BARCODES);
+        expect(r.filas).toEqual([
+            { etiqueta: '02796', globalId: 'g-brillo', disponible: true },
+            { etiqueta: '02797', globalId: 'g-brillo', disponible: true },
+            { etiqueta: '02798', globalId: 'g-brillo', disponible: false },
+            { etiqueta: '02818', globalId: 'g-victoriano', disponible: true },
+        ]);
+        expect(r.duplicadas).toEqual([]);
+        expect(r.invalidas).toEqual([]);
+        expect(r.omitidasSinPublicar).toBe(0);
+        // El snapshot de productos sigue mandando el código de MODELO: 02797 es
+        // VICTORIANO ahí y BRILLO en las etiquetas. Ambas cosas viajan; la nube
+        // resuelve la etiqueta primero.
+        const snap = armarFilasSnapshot(FIXTURE_PRODUCTS);
+        expect(snap.filas.find(f => f.codigo === '02797').globalId).toBe('g-victoriano');
+        expect(snap.filas.find(f => f.codigo === '02786').globalId).toBe('g-brillo');
+    });
+
+    it('la etiqueta vendida (02798) viaja con disponible:false, no se omite', () => {
+        const r = armarFilasEtiquetas(FIXTURE_PRODUCTS, FIXTURE_BARCODES);
+        expect(r.filas.find(f => f.etiqueta === '02798')).toEqual({ etiqueta: '02798', globalId: 'g-brillo', disponible: false });
+    });
+
+    it('omite unidades de productos archivados, sin código o sin globalId (no van en el snapshot)', () => {
+        const products = [
+            ...FIXTURE_PRODUCTS,
+            { id: 3, globalId: 'g-arch', name: 'ARCHIVADA', shortCode: '00003', stock: 1, price: 1, active: false },
+            { id: 4, globalId: '', name: 'SIN GLOBAL', shortCode: '00004', stock: 1, price: 1, active: true },
+            { id: 5, globalId: 'g-sin-cod', name: 'SIN CODIGO', shortCode: '', stock: 1, price: 1, active: true },
+        ];
+        const barcodes = [
+            ...FIXTURE_BARCODES,
+            { id: 30, productId: 3, shortCode: '00030', used: false },
+            { id: 40, productId: 4, shortCode: '00040', used: false },
+            { id: 50, productId: 5, shortCode: '00050', used: false },
+            { id: 60, productId: 999, shortCode: '00060', used: false }, // unidad huérfana
+        ];
+        const r = armarFilasEtiquetas(products, barcodes);
+        expect(r.filas.map(f => f.etiqueta)).toEqual(['02796', '02797', '02798', '02818']);
+        expect(r.omitidasSinPublicar).toBe(4);
+    });
+
+    it('etiqueta repetida en productos DISTINTOS: se envían ambas y se reporta el conflicto', () => {
+        const barcodes = [...FIXTURE_BARCODES, { id: 9, productId: 2098, shortCode: '02797', used: false }];
+        const r = armarFilasEtiquetas(FIXTURE_PRODUCTS, barcodes);
+        expect(r.filas.filter(f => f.etiqueta === '02797')).toEqual([
+            { etiqueta: '02797', globalId: 'g-brillo', disponible: true },
+            { etiqueta: '02797', globalId: 'g-victoriano', disponible: true },
+        ]);
+        expect(r.duplicadas).toEqual([{
+            etiqueta: '02797',
+            productos: [
+                { id: 2087, name: 'VESTIDO BRILLO', globalId: 'g-brillo' },
+                { id: 2098, name: 'VESTIDO VICTORIANO', globalId: 'g-victoriano' },
+            ],
+        }]);
+    });
+
+    it('misma etiqueta dos veces en el MISMO producto: una fila, disponible si alguna unidad lo está', () => {
+        const barcodes = [
+            { id: 1, productId: 2087, shortCode: '02796', used: true },
+            { id: 2, productId: 2087, shortCode: '02796', used: false },
+        ];
+        const r = armarFilasEtiquetas(FIXTURE_PRODUCTS, barcodes);
+        expect(r.filas).toEqual([{ etiqueta: '02796', globalId: 'g-brillo', disponible: true }]);
+        expect(r.duplicadas).toEqual([]);
+    });
+
+    it('códigos inválidos se omiten y se listan (nunca se "arreglan"); "2797" sí se normaliza a 02797', () => {
+        const barcodes = [
+            { id: 1, productId: 2087, shortCode: '2797', used: false },
+            { id: 2, productId: 2087, shortCode: 'ABC12', used: false },
+            { id: 3, productId: 2087, shortCode: '', used: false },
+            { id: 4, productId: 2087, shortCode: '123456', used: false },
+        ];
+        const r = armarFilasEtiquetas(FIXTURE_PRODUCTS, barcodes);
+        expect(r.filas).toEqual([{ etiqueta: '02797', globalId: 'g-brillo', disponible: true }]);
+        expect(r.invalidas.map(i => i.shortCode)).toEqual(['ABC12', '', '123456']);
+    });
+
+    it('un producto con muchas etiquetas se trocea en lotes acotados', () => {
+        const barcodes = Array.from({ length: 1201 }, (_, i) => ({
+            id: i + 1, productId: 2087, shortCode: String(i + 1).padStart(5, '0'), used: false,
+        }));
+        const r = armarFilasEtiquetas(FIXTURE_PRODUCTS, barcodes);
+        expect(r.filas).toHaveLength(1201);
+        const lotes = trocear(r.filas, TAM_LOTE_ETIQUETAS);
+        expect(lotes).toHaveLength(3);
+        expect(lotes[0]).toHaveLength(500);
+        expect(lotes[2]).toHaveLength(201);
+    });
+
+    it('sin unidades → lista vacía explícita (la nube retira lo publicado solo si se manda esperadas:0)', () => {
+        const r = armarFilasEtiquetas(FIXTURE_PRODUCTS, []);
+        expect(r.filas).toEqual([]);
     });
 });
 

@@ -24,6 +24,7 @@ export const CLAVES_SYNC_V2 = Object.freeze({
 });
 
 export const TAM_LOTE_SNAPSHOT = 250;
+export const TAM_LOTE_ETIQUETAS = 500;
 export const TAM_PAGINA_EVENTOS = 500;
 export const INTERVALO_AUTO_DEFAULT_MIN = 10;
 
@@ -31,6 +32,18 @@ export const INTERVALO_AUTO_DEFAULT_MIN = 10;
 export const PREFIJO_REF_WEB = 'WEB #';
 
 const texto = (v) => String(v ?? '').trim();
+
+/**
+ * Normalización ESTRICTA de una etiqueta física (shortCode de UNIDAD, lo que
+ * imprime MassLabeling). Válida = 1 a 5 dígitos → se rellena a 5 con ceros
+ * ('2797' → '02797'). Cualquier otra cosa devuelve null: nunca se recorta ni
+ * se limpia para "rescatar" un código inválido. Debe ser idéntica a la de la
+ * nube (functions/lib/codigo.js::normalizarEtiqueta).
+ */
+export function normalizarEtiqueta(valor) {
+    const c = texto(valor);
+    return /^\d{1,5}$/.test(c) ? c.padStart(5, '0') : null;
+}
 
 /**
  * Parte una lista en lotes de tamaño fijo (el último puede ser más corto).
@@ -80,6 +93,85 @@ export function armarFilasSnapshot(products = []) {
     }
 
     return { filas, sinCodigo, sinGlobalId, productosDistintos: globalIds.size };
+}
+
+/**
+ * Filas de ETIQUETAS FÍSICAS para la nube: una por (etiqueta, producto) con
+ * el globalId del producto y si la unidad sigue disponible (`!used`).
+ *
+ * La etiqueta es `barcodes.shortCode` (lo impreso en la prenda), que NO es el
+ * shortCode del producto: por eso la nube encontraba otra prenda (02797 =
+ * etiqueta de VESTIDO BRILLO y a la vez código de modelo de VESTIDO
+ * VICTORIANO) o ninguna (prendas con varias unidades). Se publican como alias
+ * de búsqueda vinculados por identidad; el código de modelo sigue en
+ * `armarFilasSnapshot`.
+ *
+ * Reglas:
+ *  - Solo unidades de productos que VAN en el snapshot (activos, con shortCode
+ *    y globalId): las de productos archivados o sin publicar se omiten y, al
+ *    finalizar la sesión, la nube retira lo que no llegó.
+ *  - Las unidades vendidas (`used`) SÍ viajan con `disponible: false`: la
+ *    etiqueta sigue identificando la prenda, pero la web avisa que esa unidad
+ *    ya se vendió. `disponible` es informativo: no toca el stock.
+ *  - Varias unidades del mismo producto con la misma etiqueta → una fila,
+ *    disponible si alguna lo está.
+ *  - La misma etiqueta en productos DISTINTOS se envía tal cual (la nube la
+ *    muestra como conflicto) y se reporta en `duplicadas` para repararla en
+ *    el POS (fixMissingShortCodes).
+ *  - Etiquetas que no son 1-5 dígitos se omiten y se listan en `invalidas`.
+ *
+ * @param {Array} products
+ * @param {Array} barcodes  tabla `barcodes` (productId, shortCode, used)
+ * @returns {{ filas: Array<{ etiqueta, globalId, disponible }>, invalidas: Array, duplicadas: Array<{ etiqueta, productos: Array<{ id, name, globalId }> }>, omitidasSinPublicar: number }}
+ */
+export function armarFilasEtiquetas(products = [], barcodes = []) {
+    const publicados = new Map(); // productId → producto publicable
+    for (const p of products || []) {
+        if (p?.active === false) continue;
+        if (!texto(p?.shortCode) || !texto(p?.globalId)) continue;
+        publicados.set(p.id, p);
+    }
+
+    const porClave = new Map();      // `${etiqueta}|${globalId}` → fila
+    const productosPorEtiqueta = new Map(); // etiqueta → Map(productId → producto)
+    const invalidas = [];
+    let omitidasSinPublicar = 0;
+
+    for (const u of barcodes || []) {
+        const producto = publicados.get(u?.productId);
+        if (!producto) {
+            omitidasSinPublicar++;
+            continue;
+        }
+        const etiqueta = normalizarEtiqueta(u?.shortCode);
+        if (!etiqueta) {
+            invalidas.push({ unidadId: u?.id ?? null, productId: u.productId, shortCode: texto(u?.shortCode), name: producto.name ?? '' });
+            continue;
+        }
+        const globalId = texto(producto.globalId);
+        const disponible = !u.used;
+        const clave = `${etiqueta}|${globalId}`;
+        const previa = porClave.get(clave);
+        if (previa) previa.disponible = previa.disponible || disponible;
+        else porClave.set(clave, { etiqueta, globalId, disponible });
+
+        if (!productosPorEtiqueta.has(etiqueta)) productosPorEtiqueta.set(etiqueta, new Map());
+        productosPorEtiqueta.get(etiqueta).set(producto.id, producto);
+    }
+
+    const duplicadas = [];
+    for (const [etiqueta, mapa] of productosPorEtiqueta) {
+        if (mapa.size > 1) {
+            duplicadas.push({
+                etiqueta,
+                productos: [...mapa.values()].map(p => ({ id: p.id, name: p.name ?? '', globalId: texto(p.globalId) })),
+            });
+        }
+    }
+    duplicadas.sort((a, b) => a.etiqueta.localeCompare(b.etiqueta));
+
+    const filas = [...porClave.values()].sort((a, b) => a.etiqueta.localeCompare(b.etiqueta) || a.globalId.localeCompare(b.globalId));
+    return { filas, invalidas, duplicadas, omitidasSinPublicar };
 }
 
 /**
