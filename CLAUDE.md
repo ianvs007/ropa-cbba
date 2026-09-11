@@ -490,3 +490,59 @@ se resuelve volviendo a sincronizar.
 4. ⏳ Encender la sync automática en `/sync` (solo la central).
 Pendiente conocido (no resuelto por diseño): prendas multi-unidad — la etiqueta
 física no coincide con el código web (598 etiquetas del dump de desarrollo).
+→ Resuelto en código por el item 23 (11/09/2026), pendiente de desplegar.
+
+### ✅ Búsqueda por etiquetas físicas POS↔nube — implementada LOCAL, SIN desplegar (11/09/2026)
+
+Diseño: `docs/DISENO_SYNC_EVENTOS.md` **§8**. Caso probado con el dump del
+09/09: `02797` es etiqueta (código de UNIDAD, `barcodes.shortCode`) de una
+unidad de VESTIDO BRILLO (código de modelo `02786`) y a la vez código de MODELO
+de VESTIDO VICTORIANO; el POS resuelve BRILLO (`findProductByBarcode` prioriza
+unidades) y la nube resolvía VICTORIANO. NO se usa el alineador: las etiquetas
+viajan como alias de búsqueda vinculados por `globalId`.
+
+23. **POS** (sin commitear al cierre de la sesión; sin cambio de schema):
+ - `utils/syncV2.js`: `normalizarEtiqueta` (estricta, idéntica a la nube:
+ `^\d{1,5}$` → 5 dígitos; lo demás `null`, nunca se "arregla"),
+ `armarFilasEtiquetas(products, barcodes)` → una fila `{ etiqueta, globalId,
+ disponible }` por (etiqueta, producto) solo de productos que van en el
+ snapshot; vendidas viajan con `disponible:false`; misma etiqueta en productos
+ distintos se envía y se reporta en `duplicadas`; inválidas en `invalidas`.
+ `TAM_LOTE_ETIQUETAS = 500`.
+ - `utils/syncV2Cliente.js`: paso 2b tras el snapshot — sube lotes a
+ `POST /api/sync/v2/etiquetas` (misma sesión, reintentos red/5xx), y finaliza
+ con `etiquetas: { esperadas: N }`. Un **404** = nube sin migración 007 →
+ sigue sin etiquetas y NO manda el campo (`soportado:false`).
+ - `Sync.jsx`: tarjeta "Etiquetas físicas", fase `subiendo_etiquetas`,
+ contadores publicadas/retiradas (`n/d` si la nube no soporta), panel rojo de
+ `duplicadas` (reparar con `fixMissingShortCodes()`), ámbar de `invalidas`.
+ - Tests: `syncV2.test.js` (+10: normalización y armado desde
+ products+barcodes con la fixture BRILLO/VICTORIANO) y
+ **`syncV2Cliente.test.js`** (nuevo, 8: `vi.mock('../db')` + fetch falso que
+ emula el protocolo — orden de llamadas, payload real, 404, reintento 5xx
+ idempotente, corte de red sin finalizar, 409 `etiquetas_incompletas`, venta
+ en mostrador/unidad eliminada entre syncs, `esperadas:0`, 1100 etiquetas en
+ 3 lotes). **263 tests** en verde + build OK + eslint limpio en lo tocado.
+24. **Nube** (`tienda virtual - compra de ropa`, sin commitear): migración
+ **`007_etiquetas.sql`** (`product_etiquetas` PK (etiqueta, product_id) +
+ `sync_etiquetas_pendientes` por sesión), `lib/etiquetas.js`,
+ `lib/busqueda.js` (cadena etiqueta → código de modelo → texto; si la etiqueta
+ existe la búsqueda TERMINA ahí: conflicto explícito, inactiva → sin
+ resultados, nunca cae a otra prenda por código), endpoints
+ `POST /api/sync/v2/etiquetas`, `finalizar` con `etiquetas.esperadas` (omitido
+ = no tocar; `vistas < esperadas` → 409 sin publicar ni desactivar;
+ `esperadas:0` = retiro explícito; publicación atómica en el MISMO batch),
+ `GET /api/admin/etiquetas?q=`; UI pública y admin distinguen etiqueta /
+ conflicto / código. `lib/fakeD1.js` + `lib/etiquetas.test.js` (18, recorrido
+ completo que arranca de products+barcodes del POS importando este
+ `utils/syncV2.js`). 52/52 tests + build OK. Detalle en su BITÁCORA.
+
+Límite documentado (§8.6): identificar la prenda por etiqueta NO reserva esa
+unidad física; `disponible` es informativo y no toca el stock
+(`stock_pos + Σ eventos sin ack`).
+
+**Orden de despliegue (§8.7, NADA ejecutado)**: (1) migración 007 en D1 remoto +
+registro en `d1_migrations` — requiere autorización de Alain; (2) push nube
+`main`; (3) POS: commit `build: regenerar dist` + push + instalar `main` en la
+central; (4) sync en `/sync` y verificar en la web `02797` → BRILLO, `02818` →
+VICTORIANO, `02798` → BRILLO vendida. Hasta (4) no está resuelto en producción.

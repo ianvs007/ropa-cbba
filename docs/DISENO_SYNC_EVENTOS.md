@@ -215,10 +215,10 @@ próximo intento. El botón manual sigue en `/sync`.
 
 ## 6. Lo que este diseño NO resuelve (y se acepta)
 
-- **Etiqueta ≠ código de modelo en prendas multi-unidad**: el cliente que busca en
-  la web el número de una etiqueta de una prenda con varias unidades seguirá
-  encontrando otra cosa o nada. Es un problema del modelo de códigos del POS, no
-  de la sync; la alineación de prendas únicas se mantiene como herramienta.
+- ~~**Etiqueta ≠ código de modelo en prendas multi-unidad**~~ → resuelto en la
+  §8 (11/09/2026): las etiquetas viajan como alias de búsqueda vinculados por
+  `globalId`; la web busca primero por etiqueta. Lo que sigue sin resolver es lo
+  que la §8 acota: identificar la prenda NO reserva esa unidad física.
 - **Ventana de sobreventa entre syncs**: baja de "hasta que alguien pulse el botón"
   a `intervaloMin` (10 min por defecto), pero no es cero. Cero exige POS en línea
   en cada venta (Opción C, descartada).
@@ -251,3 +251,130 @@ simulada ya existente en `sincronizar.test.js`); POS `npx vitest run` sobre
 `syncV2.js` (fórmula de stock, plan de aplicación idempotente, troceo, manejo de
 huérfanos). El wiring React/Dexie se valida con `npm run build` + prueba manual
 contra `wrangler pages dev` con D1 local, nunca contra producción.
+
+## 8. Etiquetas físicas como alias de búsqueda (11/09/2026)
+
+### 8.1 Problema (probado con el dump del POS del 09/09/2026)
+
+El POS maneja DOS códigos de 5 dígitos en el mismo espacio numérico:
+`products.shortCode` (código de MODELO, el que la nube usa como `products.codigo`)
+y `barcodes[].shortCode` (código de UNIDAD, lo que imprime la etiqueta física).
+Caso real: producto 2087 **VESTIDO BRILLO** (código `02786`, stock 2, etiquetas
+`02796` y `02797` disponibles, `02798` vendida) y producto 2098 **VESTIDO
+VICTORIANO** (código `02797`, stock 1, etiqueta `02818`). El POS
+(`findProductByBarcode`) prioriza unidades → `02797` es BRILLO; la nube solo
+conocía códigos de modelo → `02797` era VICTORIANO. La sync v2 transmitía solo
+`products.shortCode`, nunca las etiquetas. En prendas con varias unidades la
+etiqueta no coincide con nada en la web.
+
+### 8.2 Modelo de datos (nube, migración `007_etiquetas.sql`)
+
+- `product_etiquetas (etiqueta, product_id → products.id ON DELETE CASCADE,
+  global_id, disponible 0|1, actualizado_en, PK (etiqueta, product_id))`.
+  Separado de `products.codigo`: una etiqueta es un ALIAS de búsqueda vinculado
+  al producto por su identidad (`global_id`); el código de modelo no cambia.
+  La misma etiqueta puede estar en varios productos (PK compuesta): eso es un
+  CONFLICTO que se muestra, nunca se resuelve en silencio.
+- `sync_etiquetas_pendientes (sesion, etiqueta, global_id, disponible,
+  creado_en, PK (sesion, etiqueta, global_id))`: zona de aterrizaje por sesión.
+- `disponible` es INFORMATIVO: refleja `!barcodes.used` al último snapshot
+  completo. **No suma ni reemplaza el stock**, que sigue siendo
+  `stock_pos + Σ eventos sin ack` (§1). Una etiqueta vendida sigue identificando
+  su prenda (la web avisa "esa unidad ya se vendió").
+
+### 8.3 Protocolo (misma sesión que el snapshot)
+
+```
+pull eventos → snapshot ×N (250) → etiquetas ×M (500) → finalizar{ etiquetas:{esperadas} } → pull corto
+```
+
+- `POST /api/sync/v2/etiquetas { dispositivo, sesion, etiquetas:[{ etiqueta,
+  globalId, disponible }] }` (1..500 por lote). Aterriza en
+  `sync_etiquetas_pendientes` con `INSERT ... ON CONFLICT DO UPDATE` (20 filas
+  por sentencia = 80 parámetros < 100 de D1). **Idempotente**: repetir un lote
+  tras un corte no duplica nada. NO toca lo publicado.
+- `POST /api/sync/v2/finalizar` gana el campo opcional `etiquetas: { esperadas }`:
+  - **omitido** (POS anterior): lo publicado NO se toca. Omitir ≠ lista vacía y
+    no autoriza borrar.
+  - `esperadas > vistas` en la sesión → **409 `etiquetas_incompletas`**, y NO se
+    publica ni se desactiva nada (todo el cierre se rechaza).
+  - `esperadas: 0` sin lotes = retiro explícito de todas las asociaciones.
+  - Publicación en el MISMO batch que la desactivación de ausentes: `DELETE` de
+    las asociaciones que no están en la sesión + `INSERT ... SELECT ... JOIN
+    products ON global_id ... ON CONFLICT(etiqueta, product_id) DO UPDATE` + limpieza
+    del aterrizaje (esta sesión y restos > 2 días). Un corte nunca deja lo
+    publicado a medias ni borra lo previo. Al abrir una sesión nueva del mismo
+    dispositivo se descarta el aterrizaje cortado de la anterior.
+  - Etiquetas cuyo `global_id` no existe en la nube (lote de snapshot perdido)
+    no se publican y se cuentan en `sinProducto`.
+- Normalización **idéntica** en ambos lados (`normalizarEtiqueta`): `^\d{1,5}$`
+  → `padStart(5,'0')`; cualquier otra cosa → `null` (se omite y se lista, nunca
+  se "arregla"). Conserva ceros a la izquierda; `2797` → `02797`; `027970`,
+  `2797a` y los EAN de 13 dígitos NO son etiquetas.
+
+### 8.4 POS (`utils/syncV2.js::armarFilasEtiquetas`, puro)
+
+Una fila por `(etiqueta, globalId)` a partir de `products` + `barcodes`:
+- solo unidades de productos que VAN en el snapshot (activos, con `shortCode` y
+  `globalId`); las de archivados/sin publicar se omiten y la nube las retira al
+  finalizar;
+- unidades vendidas (`used`) viajan con `disponible: false`;
+- misma etiqueta repetida en el MISMO producto → una fila (`disponible` = OR);
+- misma etiqueta en productos DISTINTOS → se envían ambas (la nube marca
+  conflicto) y se listan en `duplicadas` (panel rojo en `/sync`; se repara con
+  `fixMissingShortCodes()` en el POS);
+- códigos que no son 1–5 dígitos → `invalidas` (panel ámbar), no viajan.
+
+`syncV2Cliente.js`: sube los lotes con los mismos reintentos (red/5xx, nunca
+4xx); un 404 en `/api/sync/v2/etiquetas` = nube sin migración 007 → sigue sin
+etiquetas y NO manda el campo en finalizar (`soportado:false`, aviso en UI).
+
+### 8.5 Búsqueda (nube, `lib/busqueda.js`, misma cadena en público y admin)
+
+1. **Etiqueta exacta** (`product_etiquetas`). Si existe, la búsqueda TERMINA
+   aquí: una prenda → `coincidencia: { tipo:'etiqueta', etiqueta, disponible,
+   prendas }`; varias → `etiqueta_conflicto` con todas marcadas; la prenda está
+   inactiva → sin resultados (el público no cae al código de modelo, que sería
+   OTRA prenda). El admin (`/api/admin/etiquetas?q=`) resuelve incluyendo
+   inactivas y muestra `Inactiva` / `VENDIDA`.
+2. **Código de modelo exacto** (`products.codigo`) → `coincidencia: { tipo:'codigo' }`.
+3. **Texto** tolerante a tildes/errores (lo que ya existía).
+
+La UI distingue los tres casos (banner verde etiqueta / rojo conflicto / nota
+gris código; badges `🏷` `⚠` `Cód.` en las tarjetas).
+
+### 8.6 Límite explícito: identificar ≠ reservar
+
+Identificar una prenda por su etiqueta NO reserva esa unidad física. La web
+vende "1 unidad del producto"; el evento llega al POS y `aplicarPlanEventos`
+marca la primera unidad libre (FIFO, `usedRef = 'WEB #REF'`), que puede no ser
+la etiqueta que el cliente miró. Coherencia:
+- venta web pendiente de ack → el stock publicado ya la resta (fórmula §1);
+  `disponible` de las etiquetas queda como estaba hasta el siguiente snapshot
+  completo (informativo);
+- venta en mostrador → siguiente snapshot publica esa etiqueta `disponible: 0`;
+- cancelación web → el POS libera la unidad con ese `usedRef` y el siguiente
+  snapshot la vuelve a publicar disponible;
+- unidad eliminada / producto archivado → la asociación se retira al finalizar.
+
+### 8.7 Orden de despliegue (ninguno ejecutado el 11/09/2026)
+
+1. **D1 remoto**: aplicar `migrations/007_etiquetas.sql` y registrarla en
+   `d1_migrations` (`wrangler d1 migrations apply --remote`, o por MCP como la
+   006). Requiere autorización de Alain. Verificar: 2 tablas + 2 índices.
+2. **Nube**: push de `main` → Cloudflare Pages despliega. Verificar
+   `POST /api/sync/v2/etiquetas` responde 400 (no 404) sin cuerpo válido.
+   Compatible con el POS actual (que no manda etiquetas).
+3. **POS**: commit `build: regenerar dist` y push de `main`; instalar `main` en
+   la máquina CENTRAL (lanzar el POS completo).
+4. **Primera sync en la central** (`/sync` → Sincronizar ahora): la tarjeta
+   "Etiquetas físicas" muestra N; el resultado reporta "Etiquetas publicadas"
+   (no `n/d`); revisar paneles rojo (`duplicadas`) y ámbar (`invalidas`).
+5. **Verificación en vivo**: en la web pública buscar `02797` → VESTIDO BRILLO
+   con banner "🏷 Etiqueta 02797"; buscar `02818` → VESTIDO VICTORIANO; `02798`
+   → BRILLO con aviso de unidad vendida; en el admin, `Prendas` → buscar `02797`
+   → banner etiqueta → ficha con chips de etiquetas. En D1:
+   `SELECT COUNT(*) FROM product_etiquetas` ≈ unidades publicables del POS.
+
+Hasta completar el paso 5 NO se puede afirmar que el problema esté resuelto en
+producción.
