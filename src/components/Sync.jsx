@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { useNotification } from '../hooks/useNotification';
 import { filasStockParaExportar, codigosDuplicadosEnFilas } from '../utils/syncExcel';
-import { CLAVES_SYNC_V2, INTERVALO_AUTO_DEFAULT_MIN, armarFilasSnapshot } from '../utils/syncV2';
+import { CLAVES_SYNC_V2, INTERVALO_AUTO_DEFAULT_MIN, armarFilasSnapshot, armarFilasEtiquetas } from '../utils/syncV2';
 import { sincronizarV2, estaSincronizando, URL_TIENDA_DEFAULT } from '../utils/syncV2Cliente';
 
 /**
@@ -28,6 +28,7 @@ const ETIQUETA_FASE = {
     preparando: 'Preparando…',
     bajando: 'Bajando ventas web…',
     subiendo: 'Subiendo stock…',
+    subiendo_etiquetas: 'Subiendo etiquetas físicas…',
     finalizando: 'Cerrando sesión en la nube…',
     bajando_final: 'Revisando ventas de último momento…',
     ok: 'Listo',
@@ -36,8 +37,9 @@ const ETIQUETA_FASE = {
 export default function Sync() {
     const { msg, showMsg } = useNotification();
 
-    // ── Productos (conteos) ──
+    // ── Productos y unidades (conteos) ──
     const products = useLiveQuery(() => db.products.toArray(), []);
+    const barcodes = useLiveQuery(() => db.barcodes.toArray(), []);
     const [exportando, setExportando] = React.useState(false);
 
     // ── Códigos cortos duplicados (bloquea sync/exportación) ──
@@ -79,6 +81,16 @@ export default function Sync() {
         return { totalExportables: filas.length, sinCodigoCount: sinCodigo.length, sinGlobalIdCount: sinGlobalId.length };
     }, [products]);
 
+    // Etiquetas físicas que viajan con el snapshot (shortCode de UNIDAD → globalId).
+    const etiquetasLocales = React.useMemo(
+        () => armarFilasEtiquetas(products || [], barcodes || []),
+        [products, barcodes]
+    );
+    const etiquetasDisponibles = React.useMemo(
+        () => etiquetasLocales.filas.filter(f => f.disponible).length,
+        [etiquetasLocales]
+    );
+
     // ══════════════════ SINCRONIZAR (v2) ══════════════════
     const handleSincronizar = async () => {
         if (estaSincronizando()) {
@@ -98,7 +110,8 @@ export default function Sync() {
                 `${ev.aplicados} evento(s) web aplicados · ` +
                 `${r.snapshot.actualizadas} variante(s) ajustadas en la web` +
                 `${r.snapshot.creadasProductos ? ` · ${r.snapshot.creadasProductos} prenda(s) nuevas en la web` : ''}` +
-                `${r.finalizar.desactivados ? ` · ${r.finalizar.desactivados} desactivada(s) en la web` : ''}`);
+                `${r.finalizar.desactivados ? ` · ${r.finalizar.desactivados} desactivada(s) en la web` : ''}` +
+                `${r.etiquetas?.soportado ? ` · ${r.etiquetas.publicadas} etiqueta(s) publicadas` : ' · la tienda aún no recibe etiquetas'}`);
         } catch (err) {
             console.error('Error en sincronización v2:', err);
             if (Array.isArray(err?.duplicados) && err.duplicados.length > 0) {
@@ -360,7 +373,7 @@ export default function Sync() {
                     <div>
                         <h2 className="font-black text-pink-950 uppercase tracking-tight">Sincronizar con la tienda virtual</h2>
                         <p className="text-xs text-pink-500 font-medium">
-                            Baja las ventas web (sin repetir ninguna), sube el stock por identidad estable y la nube apaga lo que ya no existe
+                            Baja las ventas web (sin repetir ninguna), sube el stock y las etiquetas físicas por identidad estable y la nube apaga lo que ya no existe
                         </p>
                     </div>
                 </div>
@@ -411,19 +424,53 @@ export default function Sync() {
                 )}
 
                 {/* Estado */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-4">
                     {[
                         { label: 'Última sync OK', value: ultimaOkSetting?.value ? String(ultimaOkSetting.value).replace('T', ' ').slice(0, 16) : '—' },
                         { label: 'Prendas a publicar', value: totalExportables },
+                        { label: 'Etiquetas físicas', value: barcodes ? `${etiquetasLocales.filas.length}` : '—', sub: barcodes ? `${etiquetasDisponibles} disponibles` : '' },
                         { label: 'Eventos web aplicados', value: eventosAplicados ?? '—' },
                         { label: 'Último evento confirmado', value: ackSetting?.value ? `#${ackSetting.value}` : '—' },
-                    ].map(({ label, value }) => (
+                    ].map(({ label, value, sub }) => (
                         <div key={label} className="bg-pink-50/60 border border-pink-100 rounded-xl p-3 text-center">
                             <p className="text-lg font-black text-pink-900 truncate">{value}</p>
                             <p className="text-[10px] text-pink-500 font-bold uppercase tracking-wide">{label}</p>
+                            {sub ? <p className="text-[10px] text-pink-400 font-semibold">{sub}</p> : null}
                         </div>
                     ))}
                 </div>
+
+                {etiquetasLocales.duplicadas.length > 0 && (
+                    <div className="mb-4 flex items-start gap-2 bg-red-50 border border-red-300 rounded-xl px-3 py-2.5">
+                        <AlertTriangle size={16} className="text-red-600 shrink-0 mt-0.5" />
+                        <div className="text-xs text-red-800">
+                            <p className="font-bold">
+                                {etiquetasLocales.duplicadas.length} etiqueta(s) física(s) repetida(s) en prendas distintas.
+                            </p>
+                            <p className="mt-0.5">
+                                Se publican igual y la web las mostrará como <span className="font-bold">conflicto</span> (no elige una al azar).
+                                Repáralas en Etiquetado → "Sanear códigos" y vuelve a sincronizar.
+                            </p>
+                            <ul className="mt-1 space-y-0.5 list-disc list-inside">
+                                {etiquetasLocales.duplicadas.slice(0, 8).map(d => (
+                                    <li key={d.etiqueta}>
+                                        <span className="font-mono font-bold">{d.etiqueta}</span>: {d.productos.map(p => p.name || `#${p.id}`).join(' / ')}
+                                    </li>
+                                ))}
+                                {etiquetasLocales.duplicadas.length > 8 && <li>…y {etiquetasLocales.duplicadas.length - 8} más</li>}
+                            </ul>
+                        </div>
+                    </div>
+                )}
+                {etiquetasLocales.invalidas.length > 0 && (
+                    <div className="mb-4 flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+                        <AlertTriangle size={16} className="text-amber-500 shrink-0 mt-0.5" />
+                        <p className="text-xs text-amber-800">
+                            <span className="font-bold">{etiquetasLocales.invalidas.length} unidad(es) con código de etiqueta inválido</span> (no son 1 a 5 dígitos)
+                            no se publican. Repáralas en Etiquetado → "Sanear códigos".
+                        </p>
+                    </div>
+                )}
 
                 {ultimoErrorSetting?.value && !sincronizando && (
                     <div className="mb-4 flex items-start gap-2 bg-red-50 border border-red-300 rounded-xl px-3 py-2.5">
@@ -465,6 +512,8 @@ export default function Sync() {
                             {ETIQUETA_FASE[progreso.fase] || 'Sincronizando…'}
                             {progreso.fase === 'subiendo' && progreso.total
                                 ? ` ${Math.min(progreso.hechas, progreso.total)} de ${progreso.total} prendas (${porcentaje}%)` : ''}
+                            {progreso.fase === 'subiendo_etiquetas' && progreso.total
+                                ? ` ${Math.min(progreso.hechas, progreso.total)} de ${progreso.total} etiquetas (${porcentaje}%)` : ''}
                             {progreso.fase === 'bajando' && progreso.eventos ? ` · ${progreso.eventos} evento(s)` : ''}
                             {' — no cierres esta ventana'}
                         </p>
@@ -505,8 +554,10 @@ export default function Sync() {
                                 { label: 'Prendas nuevas en la web', value: resultado.snapshot.creadasProductos },
                                 { label: 'Identidades adoptadas', value: resultado.snapshot.adoptados },
                                 { label: 'Desactivadas en la web', value: resultado.finalizar.desactivados },
+                                { label: 'Etiquetas publicadas', value: resultado.etiquetas?.soportado ? resultado.etiquetas.publicadas : 'n/d' },
+                                { label: 'Etiquetas retiradas', value: resultado.etiquetas?.soportado ? resultado.etiquetas.retiradas : 'n/d' },
                                 { label: 'Eventos repetidos (ignorados)', value: resultado.eventos.saltados },
-                                { label: 'Avisos', value: resultado.eventos.avisos + resultado.eventos.huerfanos + resultado.snapshot.detalle.length + resultado.snapshot.rechazadas },
+                                { label: 'Avisos', value: resultado.eventos.avisos + resultado.eventos.huerfanos + resultado.snapshot.detalle.length + resultado.snapshot.rechazadas + (resultado.etiquetas?.rechazadas || 0) },
                             ].map(({ label, value }) => (
                                 <div key={label} className="bg-pink-50/60 border border-pink-100 rounded-xl p-3 text-center">
                                     <p className="text-2xl font-black text-pink-900">{value}</p>
@@ -563,8 +614,36 @@ export default function Sync() {
                             </details>
                         )}
 
+                        {resultado.etiquetas && !resultado.etiquetas.soportado && (
+                            <div className="mb-3 flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+                                <AlertTriangle size={16} className="text-amber-500 shrink-0 mt-0.5" />
+                                <p className="text-xs text-amber-800">
+                                    <span className="font-bold">La tienda virtual aún no recibe etiquetas físicas</span> (falta desplegar la
+                                    migración 007 y el código nuevo en la nube). El stock se sincronizó igual; la búsqueda web por
+                                    número de etiqueta seguirá fallando hasta actualizar la tienda.
+                                </p>
+                            </div>
+                        )}
+                        {resultado.etiquetas?.soportado && (resultado.etiquetas.sinProducto > 0 || resultado.etiquetas.rechazadas > 0) && (
+                            <details className="mb-3 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+                                <summary className="text-xs font-bold text-amber-800 cursor-pointer">
+                                    Avisos de etiquetas ({resultado.etiquetas.sinProducto + resultado.etiquetas.rechazadas})
+                                </summary>
+                                <ul className="text-xs text-amber-800 mt-2 space-y-0.5 list-disc list-inside">
+                                    {resultado.etiquetas.sinProducto > 0 && (
+                                        <li>{resultado.etiquetas.sinProducto} etiqueta(s) cuyo producto no existe en la web (no se publicaron).</li>
+                                    )}
+                                    {resultado.etiquetas.detalle.slice(0, 20).map((d, i) => (
+                                        <li key={i}><span className="font-mono font-bold">{d.etiqueta || '—'}</span> — {d.motivo}</li>
+                                    ))}
+                                </ul>
+                            </details>
+                        )}
+
                         <p className="text-[11px] text-gray-400 text-center">
-                            {resultado.snapshot.filas} variante(s) en {resultado.snapshot.lotes} lote(s) · {Math.round(resultado.duracionMs / 100) / 10}s
+                            {resultado.snapshot.filas} variante(s) en {resultado.snapshot.lotes} lote(s)
+                            {resultado.etiquetas?.soportado ? ` · ${resultado.etiquetas.filas} etiqueta(s) en ${resultado.etiquetas.lotes} lote(s)` : ''}
+                            {' · '}{Math.round(resultado.duracionMs / 100) / 10}s
                             {resultado.globalIdsCompletados ? ` · ${resultado.globalIdsCompletados} identidad(es) completadas antes de enviar` : ''}
                         </p>
                     </div>

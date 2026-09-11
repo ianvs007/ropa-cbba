@@ -5,8 +5,11 @@
  *   1. PULL: bajar eventos (ventas/cancelaciones web) desde el último ack,
  *      aplicarlos en UNA transacción Dexie (idempotente por id) y confirmar.
  *   2. PUSH: subir el stock por globalId en lotes de 250 dentro de una sesión.
+ *   2b. ETIQUETAS: subir las etiquetas físicas (shortCode de UNIDAD → globalId,
+ *      disponible) en lotes de 500 dentro de la MISMA sesión. La nube las
+ *      publica en bloque al finalizar, solo si llegaron todas.
  *   3. FINALIZAR: la nube desactiva lo que no vino en la sesión (solo si vio
- *      todos los productos esperados).
+ *      todos los productos esperados) y publica las etiquetas de la sesión.
  *   4. PULL corto: recoger ventas ocurridas durante el push.
  *
  * Cualquier corte se resuelve volviendo a llamar a `sincronizarV2()`.
@@ -25,8 +28,10 @@ import { codigosDuplicadosEnFilas } from './syncExcel';
 import {
     CLAVES_SYNC_V2,
     TAM_LOTE_SNAPSHOT,
+    TAM_LOTE_ETIQUETAS,
     TAM_PAGINA_EVENTOS,
     armarFilasSnapshot,
+    armarFilasEtiquetas,
     planificarAplicacionEventos,
     trocear,
     mensajeErrorHttp,
@@ -239,6 +244,61 @@ export async function sincronizarV2({ onProgreso, desactivarAusentes = true } = 
             onProgreso?.({ fase: 'subiendo', hechas: Math.min((i + 1) * TAM_LOTE_SNAPSHOT, filas.length), total: filas.length });
         }
 
+        // ── 2b. ETIQUETAS FÍSICAS (misma sesión) ──
+        // Cada unidad (barcodes.shortCode) viaja con el globalId de su producto y
+        // si sigue disponible. La nube las aterriza por lote y las publica en
+        // bloque al finalizar; un corte acá no deja nada a medias en la web.
+        const barcodes = await db.barcodes.toArray();
+        const planEtiquetas = armarFilasEtiquetas(todos, barcodes);
+        const etiquetas = {
+            soportado: true,
+            filas: planEtiquetas.filas.length,
+            lotes: 0,
+            recibidas: 0,
+            rechazadas: 0,
+            invalidas: planEtiquetas.invalidas.length,
+            duplicadas: planEtiquetas.duplicadas,
+            publicadas: 0,
+            retiradas: 0,
+            sinProducto: 0,
+            detalle: [],
+        };
+        const lotesEtiquetas = trocear(planEtiquetas.filas, TAM_LOTE_ETIQUETAS);
+        etiquetas.lotes = lotesEtiquetas.length;
+        onProgreso?.({ fase: 'subiendo_etiquetas', hechas: 0, total: planEtiquetas.filas.length });
+        for (let i = 0; i < lotesEtiquetas.length && etiquetas.soportado; i++) {
+            let r;
+            try {
+                r = await llamarConReintentos(base, token, '/api/sync/v2/etiquetas', {
+                    method: 'POST',
+                    body: {
+                        dispositivo: config.dispositivoId,
+                        sesion,
+                        etiquetas: lotesEtiquetas[i],
+                    },
+                }, `etiquetas lote ${i + 1}/${lotesEtiquetas.length}`);
+            } catch (err) {
+                // Tienda anterior a la migración 007: sin el endpoint. Se sigue sin
+                // etiquetas y NO se manda el campo en finalizar (la nube no borra nada).
+                if (err instanceof ErrorSync && err.status === 404) {
+                    etiquetas.soportado = false;
+                    console.warn('La tienda aún no soporta etiquetas físicas (404 en /api/sync/v2/etiquetas).');
+                    break;
+                }
+                throw err;
+            }
+            etiquetas.recibidas += r.recibidas || 0;
+            etiquetas.rechazadas += r.rechazadas || 0;
+            for (const d of r.detalle || []) {
+                if (etiquetas.detalle.length < 50) etiquetas.detalle.push(d);
+            }
+            onProgreso?.({
+                fase: 'subiendo_etiquetas',
+                hechas: Math.min((i + 1) * TAM_LOTE_ETIQUETAS, planEtiquetas.filas.length),
+                total: planEtiquetas.filas.length,
+            });
+        }
+
         // ── 3. FINALIZAR ──
         onProgreso?.({ fase: 'finalizando' });
         const fin = await llamarConReintentos(base, token, '/api/sync/v2/finalizar', {
@@ -248,8 +308,16 @@ export async function sincronizarV2({ onProgreso, desactivarAusentes = true } = 
                 sesion,
                 productosEsperados: productosDistintos,
                 desactivarAusentes,
+                // Solo si la tienda aceptó las etiquetas: omitir el campo significa
+                // "no toques las asociaciones publicadas" (cliente anterior).
+                ...(etiquetas.soportado ? { etiquetas: { esperadas: etiquetas.recibidas } } : {}),
             },
         }, 'finalizar');
+        if (etiquetas.soportado && fin.etiquetas) {
+            etiquetas.publicadas = fin.etiquetas.publicadas || 0;
+            etiquetas.retiradas = fin.etiquetas.retiradas || 0;
+            etiquetas.sinProducto = fin.etiquetas.sinProducto || 0;
+        }
 
         // ── 4. PULL corto ──
         onProgreso?.({ fase: 'bajando_final' });
@@ -281,6 +349,7 @@ export async function sincronizarV2({ onProgreso, desactivarAusentes = true } = 
                 huerfanosDetalle: [...eventos.huerfanosDetalle, ...eventosFinal.huerfanosDetalle].slice(0, 50),
             },
             snapshot,
+            etiquetas,
             finalizar: { desactivados: fin.desactivados || 0, vistos: fin.vistos || 0 },
             sinCodigo: sinCodigo.length,
             sinGlobalId: sinGlobalId.length,
