@@ -549,10 +549,33 @@ unidad física; `disponible` es informativo y no toca el stock
  desplegó `4d92e6b`. `/api/productos?q=02797` responde 200 JSON — eso NO
  demuestra aún que resuelva BRILLO: la nube no tiene etiquetas hasta que la
  central sincronice con este POS.
-3. ⏳ POS: commit `build: regenerar dist` + push de `main` (`5941354..a47fec6`
- siguen solo en local) + instalar `main` en la central.
-4. ⏳ Sync en `/sync` y verificar en la web `02797`/`02796` → BRILLO, `02818` →
- VICTORIANO, `02798` → BRILLO vendida. Hasta (4) no está resuelto en producción.
+3. ✅ POS publicado: `201f12e build: regenerar dist con envio de etiquetas
+ fisicas` en `ianvs007/ropa-cbba` `main`. Instalado en la central en una
+ carpeta NUEVA clonada con git: `C:\NO BORRAR SISTEMA\tienda de ropas-git`
+ (`git clone` + `npm.cmd ci` + `git pull --ff-only origin main`). La carpeta
+ vieja `tienda de ropas` (copiada de zip, sin git) y `ropa-cbba-v7` quedan
+ como respaldo. Los datos NO están en la carpeta del código: viven en el
+ perfil de Chrome `%USERPROFILE%\.tienda_ropa_data` (IndexedDB) que abre
+ `iniciar-servicio-silencioso.bat`, por eso la instalación nueva vio todos
+ los productos y ventas sin importar nada.
+4. ✅ **RESUELTO EN PRODUCCIÓN (11/09/2026 14:34)**: primera sync desde la
+ central con etiquetas: 2647 prendas, **3622 etiquetas físicas** (2498
+ disponibles), 3 etiquetas repetidas en prendas distintas (`00001`, `00002`,
+ `02506` → se publican como conflicto; reparar en Etiquetado → Sanear códigos).
+ Verificado contra la API: `/api/productos?q=02797` → VESTIDO BRILLO
+ `{tipo:'etiqueta', disponible:true}`; `q=02798` → BRILLO `disponible:false`.
+ Nota: en la nube VICTORIANO ya tiene código `02818` (el alineador se aplicó
+ en algún momento en la central), así que `02797` ya no es código de nadie.
+ ⏳ Falta encender la sync automática (toggle en `/sync`, solo la central) y
+ apuntar el acceso directo al `.bat` de la carpeta nueva.
+
+**Procedimiento de actualización de la central (desde el 11/09/2026)**: con el
+POS cerrado, en PowerShell dentro de `tienda de ropas-git`: `git status --short`
+(si hay `dist/` modificado: `git stash push -m respaldo -- dist`) → `git pull
+--ff-only origin main` → `npm.cmd ci` (solo si cambió `package.json`/lock) →
+`.\iniciar-servicio-silencioso.bat`. Antes de cada actualización, exportar un
+Backup completo desde el POS. Nunca `git reset --hard`, `git stash pop` ni
+editar código en la central.
 Decisión de Alain (11/09): la nube sigue en fase de pruebas, el POS es la
 autoridad; el botón "Vaciar nube" es TEMPORAL hasta cerrar los pendientes del
 cruce.

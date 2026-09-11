@@ -366,10 +366,15 @@ la etiqueta que el cliente miró. Coherencia:
    `/api/productos?q=02797` responde 200 JSON. Compatible con el POS actual de la
    central (que no manda etiquetas): hasta que sincronice el POS nuevo, la tabla
    `product_etiquetas` está vacía y la búsqueda cae al código de modelo.
-3. ⏳ **POS**: commit `build: regenerar dist` y push de `main` (los commits
-   `5941354..a47fec6` están solo en local); instalar `main` en la máquina
-   CENTRAL (lanzar el POS completo).
-4. ⏳ **Primera sync en la central** (`/sync` → Sincronizar ahora): la tarjeta
+3. ✅ **POS**: `201f12e build: regenerar dist con envio de etiquetas fisicas`
+   en `main`; instalado en la central como clon git en
+   `C:\NO BORRAR SISTEMA\tienda de ropas-git` (los datos viven en el perfil
+   `%USERPROFILE%\.tienda_ropa_data`, no en la carpeta del código).
+4. ✅ **Primera sync en la central** (11/09/2026 14:34): 2647 prendas, 3622
+   etiquetas físicas (2498 disponibles), 3 conflictos (`00001`, `00002`,
+   `02506`). Verificado por API: `q=02797` → BRILLO etiqueta disponible;
+   `q=02798` → BRILLO etiqueta vendida. Lo que sigue es la descripción del
+   procedimiento. (`/sync` → Sincronizar ahora): la tarjeta
    "Etiquetas físicas" muestra N; el resultado reporta "Etiquetas publicadas"
    (no `n/d`); revisar paneles rojo (`duplicadas`) y ámbar (`invalidas`).
 5. ⏳ **Verificación en vivo**: en la web pública buscar `02797` → VESTIDO BRILLO
