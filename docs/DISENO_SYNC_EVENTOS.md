@@ -357,20 +357,22 @@ la etiqueta que el cliente miró. Coherencia:
   snapshot la vuelve a publicar disponible;
 - unidad eliminada / producto archivado → la asociación se retira al finalizar.
 
-### 8.7 Orden de despliegue (ninguno ejecutado el 11/09/2026)
+### 8.7 Orden de despliegue (estado al 11/09/2026 13:45)
 
-1. **D1 remoto**: aplicar `migrations/007_etiquetas.sql` y registrarla en
-   `d1_migrations` (`wrangler d1 migrations apply --remote`, o por MCP como la
-   006). Requiere autorización de Alain. Verificar: 2 tablas + 2 índices.
-2. **Nube**: push de `main` → Cloudflare Pages despliega. Verificar
-   `POST /api/sync/v2/etiquetas` responde 400 (no 404) sin cuerpo válido.
-   Compatible con el POS actual (que no manda etiquetas).
-3. **POS**: commit `build: regenerar dist` y push de `main`; instalar `main` en
-   la máquina CENTRAL (lanzar el POS completo).
-4. **Primera sync en la central** (`/sync` → Sincronizar ahora): la tarjeta
+1. ✅ **D1 remoto**: `migrations/007_etiquetas.sql` aplicada con
+   `wrangler d1 migrations apply --remote` (queda registrada en `d1_migrations`)
+   en una sesión posterior, con autorización de Alain.
+2. ✅ **Nube**: push `9ff2cfb..4d92e6b` a `main` → Pages desplegó `4d92e6b`.
+   `/api/productos?q=02797` responde 200 JSON. Compatible con el POS actual de la
+   central (que no manda etiquetas): hasta que sincronice el POS nuevo, la tabla
+   `product_etiquetas` está vacía y la búsqueda cae al código de modelo.
+3. ⏳ **POS**: commit `build: regenerar dist` y push de `main` (los commits
+   `5941354..a47fec6` están solo en local); instalar `main` en la máquina
+   CENTRAL (lanzar el POS completo).
+4. ⏳ **Primera sync en la central** (`/sync` → Sincronizar ahora): la tarjeta
    "Etiquetas físicas" muestra N; el resultado reporta "Etiquetas publicadas"
    (no `n/d`); revisar paneles rojo (`duplicadas`) y ámbar (`invalidas`).
-5. **Verificación en vivo**: en la web pública buscar `02797` → VESTIDO BRILLO
+5. ⏳ **Verificación en vivo**: en la web pública buscar `02797` → VESTIDO BRILLO
    con banner "🏷 Etiqueta 02797"; buscar `02818` → VESTIDO VICTORIANO; `02798`
    → BRILLO con aviso de unidad vendida; en el admin, `Prendas` → buscar `02797`
    → banner etiqueta → ficha con chips de etiquetas. En D1:

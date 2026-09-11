@@ -541,8 +541,18 @@ Límite documentado (§8.6): identificar la prenda por etiqueta NO reserva esa
 unidad física; `disponible` es informativo y no toca el stock
 (`stock_pos + Σ eventos sin ack`).
 
-**Orden de despliegue (§8.7, NADA ejecutado)**: (1) migración 007 en D1 remoto +
-registro en `d1_migrations` — requiere autorización de Alain; (2) push nube
-`main`; (3) POS: commit `build: regenerar dist` + push + instalar `main` en la
-central; (4) sync en `/sync` y verificar en la web `02797` → BRILLO, `02818` →
-VICTORIANO, `02798` → BRILLO vendida. Hasta (4) no está resuelto en producción.
+**Orden de despliegue (§8.7) — estado al 11/09/2026 13:45**:
+1. ✅ Migración 007 aplicada en D1 remoto con wrangler (registrada en
+ `d1_migrations`), en una sesión posterior con autorización de Alain.
+2. ✅ Nube publicada: push `9ff2cfb..4d92e6b` a `ianvs007/tienda-virtual` `main`
+ (los 5 commits de etiquetas + `4d92e6b` fix del vaciado por lotes); Pages
+ desplegó `4d92e6b`. `/api/productos?q=02797` responde 200 JSON — eso NO
+ demuestra aún que resuelva BRILLO: la nube no tiene etiquetas hasta que la
+ central sincronice con este POS.
+3. ⏳ POS: commit `build: regenerar dist` + push de `main` (`5941354..a47fec6`
+ siguen solo en local) + instalar `main` en la central.
+4. ⏳ Sync en `/sync` y verificar en la web `02797`/`02796` → BRILLO, `02818` →
+ VICTORIANO, `02798` → BRILLO vendida. Hasta (4) no está resuelto en producción.
+Decisión de Alain (11/09): la nube sigue en fase de pruebas, el POS es la
+autoridad; el botón "Vaciar nube" es TEMPORAL hasta cerrar los pendientes del
+cruce.
