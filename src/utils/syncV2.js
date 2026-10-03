@@ -7,11 +7,18 @@
  * hacer con una página de eventos y cómo armar el snapshot; la capa Dexie
  * (db/helpers.js) y la de red (syncV2Cliente.js) solo ejecutan lo decidido.
  *
+ * Además (2026-10-03): eventos `confirmacion` / `entrega` (delta 0) crean o
+ * actualizan el historial de ventas como "Venta en línea" sin tocar caja:
+ * Pendiente de entrega → Entregado.
+ *
  * Idempotencia: cada evento aplicado queda en la tabla `webEventos` con su id
  * de nube como clave primaria. `planificarAplicacionEventos` recibe ese
  * conjunto y salta lo ya aplicado, así que repetir una página tras un corte
  * de red nunca descuenta dos veces.
  */
+
+/** Método de pago de las ventas web: no cuenta en efectivo ni en QR de caja. */
+export const PAGO_VENTA_EN_LINEA = 'en_linea';
 
 export const CLAVES_SYNC_V2 = Object.freeze({
     dispositivoId: 'syncV2.dispositivoId',
@@ -242,17 +249,60 @@ export function planificarAplicacionEventos({ eventos = [], products = [], barco
         const globalId = texto(e.globalId);
         const codigo = texto(e.codigo);
         const pedidoRef = texto(e.pedidoRef) || 'SIN-REF';
+        const nombreEvt = texto(e.nombre);
+        const talla = texto(e.talla);
+        const color = texto(e.color);
+        const precioUnit = Number(e.precioUnit) || 0;
+        const cantidadEvt = Math.max(1, Math.abs(Number(e.cantidad) || Number(e.delta) || 1));
 
         // Identidad: globalId manda. Fallback por código SOLO si el evento no
         // trae globalId (venta anterior al bootstrap del producto en la nube).
         const producto = (globalId && porGlobalId.get(globalId)) || (!globalId && codigo ? porCodigo.get(codigo) : null);
+
+        // Historial (sin stock ni caja): confirmacion / entrega.
+        if (tipo === 'confirmacion' || tipo === 'entrega') {
+            plan.operaciones.push({
+                eventoId: id,
+                tipo,
+                soloHistorial: true,
+                productId: producto?.id ?? null,
+                delta: 0,
+                stockAnterior: producto ? estadoProducto.get(producto.id).stock : null,
+                stockNuevo: producto ? estadoProducto.get(producto.id).stock : null,
+                pedidoRef,
+                unidadesAMarcar: [],
+                unidadesALiberar: [],
+                kardex: { type: 'salida', qty: 0, notes: '' },
+                historial: {
+                    accion: tipo === 'confirmacion' ? 'alta' : 'entregar',
+                    deliveryStatus: tipo === 'confirmacion' ? 'pendiente_entrega' : 'entregado',
+                    item: {
+                        productId: producto?.id ?? null,
+                        name: nombreEvt || producto?.name || 'Prenda web',
+                        qty: cantidadEvt,
+                        price: precioUnit || Number(producto?.price) || 0,
+                        size: talla || producto?.size || '',
+                        color: color || producto?.color || '',
+                        shortCode: codigo || producto?.shortCode || '',
+                        globalId: globalId || producto?.globalId || '',
+                        eventoId: id,
+                    },
+                    creadoEn: e.creadoEn || null,
+                },
+                aviso: producto ? null : `Producto no encontrado en POS; historial igual se registra (${nombreEvt || codigo || globalId})`,
+            });
+            plan.resumen.aplicados++;
+            if (!producto) plan.resumen.avisos++;
+            continue;
+        }
+
         if (!producto || !Number.isInteger(delta) || delta === 0 || !['venta', 'cancelacion', 'expiracion'].includes(tipo)) {
             plan.huerfanos.push({
                 eventoId: id,
                 tipo,
                 globalId,
                 codigo,
-                nombre: texto(e.nombre),
+                nombre: nombreEvt,
                 motivo: !producto
                     ? (globalId ? `Producto con globalId ${globalId} no existe en este POS` : `Sin globalId y código ${codigo || '?'} no encontrado`)
                     : 'Evento inválido (tipo o delta)',
@@ -325,6 +375,8 @@ export function planificarAplicacionEventos({ eventos = [], products = [], barco
                     qty,
                     notes: `${tipo === 'expiracion' ? 'EXPIRACIÓN' : 'CANCELACIÓN'} WEB #${pedidoRef}`.toUpperCase(),
                 },
+                // Si ya había historial por confirmación, anularlo.
+                historial: { accion: 'cancelar' },
                 aviso,
             });
             plan.resumen.unidadesRepuestas += qty;

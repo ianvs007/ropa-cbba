@@ -296,6 +296,55 @@ describe('planificarAplicacionEventos', () => {
         expect(products[0].stock).toBe(3);
         expect(barcodes[0].used).toBe(false);
     });
+
+    it('confirmacion: opera solo historial (delta 0), no mueve stock ni kárdex', () => {
+        const plan = planificarAplicacionEventos({
+            eventos: [evento({
+                id: 60,
+                tipo: 'confirmacion',
+                delta: 0,
+                cantidad: 1,
+                precioUnit: 298,
+                pedidoRef: '4637C262',
+            })],
+            products: [prod()],
+            barcodes: [],
+        });
+        expect(plan.operaciones).toHaveLength(1);
+        const op = plan.operaciones[0];
+        expect(op.soloHistorial).toBe(true);
+        expect(op.historial.accion).toBe('alta');
+        expect(op.historial.deliveryStatus).toBe('pendiente_entrega');
+        expect(op.historial.item.price).toBe(298);
+        expect(op.historial.item.qty).toBe(1);
+        expect(op.stockNuevo).toBe(3);
+        expect(op.kardex.qty).toBe(0);
+        expect(plan.huerfanos).toHaveLength(0);
+    });
+
+    it('entrega: actualiza deliveryStatus a entregado sin tocar stock', () => {
+        const plan = planificarAplicacionEventos({
+            eventos: [evento({ id: 61, tipo: 'entrega', delta: 0, cantidad: 1, pedidoRef: '4637C262' })],
+            products: [prod()],
+            barcodes: [],
+        });
+        const op = plan.operaciones[0];
+        expect(op.soloHistorial).toBe(true);
+        expect(op.historial.accion).toBe('entregar');
+        expect(op.historial.deliveryStatus).toBe('entregado');
+        expect(op.stockNuevo).toBe(3);
+    });
+
+    it('confirmacion sin producto en POS igual genera historial (con aviso)', () => {
+        const plan = planificarAplicacionEventos({
+            eventos: [evento({ id: 62, tipo: 'confirmacion', delta: 0, cantidad: 1, globalId: 'g-nope', nombre: 'VESTIDO' })],
+            products: [prod()],
+            barcodes: [],
+        });
+        expect(plan.operaciones).toHaveLength(1);
+        expect(plan.operaciones[0].aviso).toMatch(/no encontrado/i);
+        expect(plan.huerfanos).toHaveLength(0);
+    });
 });
 
 describe('mensajeErrorHttp', () => {
