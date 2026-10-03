@@ -277,6 +277,9 @@ etiqueta no coincide con nada en la web.
   CONFLICTO que se muestra, nunca se resuelve en silencio.
 - `sync_etiquetas_pendientes (sesion, etiqueta, global_id, disponible,
   creado_en, PK (sesion, etiqueta, global_id))`: zona de aterrizaje por sesión.
+  **Sin uso desde el 11/09/2026 16:00** (§8.8): la presencia de la sesión pasó
+  a dos filas de `settings` para no consumir la cuota de escritura de D1. La
+  tabla se conserva (no hay migración de borrado).
 - `disponible` es INFORMATIVO: refleja `!barcodes.used` al último snapshot
   completo. **No suma ni reemplaza el stock**, que sigue siendo
   `stock_pos + Σ eventos sin ack` (§1). Una etiqueta vendida sigue identificando
@@ -289,22 +292,23 @@ pull eventos → snapshot ×N (250) → etiquetas ×M (500) → finalizar{ etiqu
 ```
 
 - `POST /api/sync/v2/etiquetas { dispositivo, sesion, etiquetas:[{ etiqueta,
-  globalId, disponible }] }` (1..500 por lote). Aterriza en
-  `sync_etiquetas_pendientes` con `INSERT ... ON CONFLICT DO UPDATE` (20 filas
-  por sentencia = 80 parámetros < 100 de D1). **Idempotente**: repetir un lote
-  tras un corte no duplica nada. NO toca lo publicado.
+  globalId, disponible }] }` (1..500 por lote). Se acumula en la presencia de
+  la sesión (§8.8; hasta el 11/09 16:00 aterrizaba fila por fila en
+  `sync_etiquetas_pendientes`). **Idempotente**: repetir un lote tras un corte
+  no duplica nada. NO toca lo publicado.
 - `POST /api/sync/v2/finalizar` gana el campo opcional `etiquetas: { esperadas }`:
   - **omitido** (POS anterior): lo publicado NO se toca. Omitir ≠ lista vacía y
     no autoriza borrar.
   - `esperadas > vistas` en la sesión → **409 `etiquetas_incompletas`**, y NO se
     publica ni se desactiva nada (todo el cierre se rechaza).
   - `esperadas: 0` sin lotes = retiro explícito de todas las asociaciones.
-  - Publicación en el MISMO batch que la desactivación de ausentes: `DELETE` de
-    las asociaciones que no están en la sesión + `INSERT ... SELECT ... JOIN
-    products ON global_id ... ON CONFLICT(etiqueta, product_id) DO UPDATE` + limpieza
-    del aterrizaje (esta sesión y restos > 2 días). Un corte nunca deja lo
-    publicado a medias ni borra lo previo. Al abrir una sesión nueva del mismo
-    dispositivo se descarta el aterrizaje cortado de la anterior.
+  - Publicación en el MISMO batch que la desactivación de ausentes: se compara
+    la presencia de la sesión con `product_etiquetas` y se escriben SOLO las
+    diferencias (`DELETE` por pares etiqueta/product_id de las que ya no están;
+    `INSERT ... ON CONFLICT(etiqueta, product_id) DO UPDATE` de las nuevas o
+    con `disponible` distinto). Un corte nunca deja lo publicado a medias ni
+    borra lo previo. Al abrir una sesión nueva del mismo dispositivo se descarta
+    la presencia cortada de la anterior.
   - Etiquetas cuyo `global_id` no existe en la nube (lote de snapshot perdido)
     no se publican y se cuentan en `sinProducto`.
 - Normalización **idéntica** en ambos lados (`normalizarEtiqueta`): `^\d{1,5}$`
@@ -366,17 +370,74 @@ la etiqueta que el cliente miró. Coherencia:
    `/api/productos?q=02797` responde 200 JSON. Compatible con el POS actual de la
    central (que no manda etiquetas): hasta que sincronice el POS nuevo, la tabla
    `product_etiquetas` está vacía y la búsqueda cae al código de modelo.
-3. ⏳ **POS**: commit `build: regenerar dist` y push de `main` (los commits
-   `5941354..a47fec6` están solo en local); instalar `main` en la máquina
-   CENTRAL (lanzar el POS completo).
-4. ⏳ **Primera sync en la central** (`/sync` → Sincronizar ahora): la tarjeta
+3. ✅ **POS**: `201f12e build: regenerar dist con envio de etiquetas fisicas`
+   en `main`; instalado en la central como clon git en
+   `C:\NO BORRAR SISTEMA\tienda de ropas-git` (los datos viven en el perfil
+   `%USERPROFILE%\.tienda_ropa_data`, no en la carpeta del código).
+4. ✅ **Primera sync en la central** (11/09/2026 14:34): 2647 prendas, 3622
+   etiquetas físicas (2498 disponibles), 3 conflictos (`00001`, `00002`,
+   `02506`). Verificado por API: `q=02797` → BRILLO etiqueta disponible;
+   `q=02798` → BRILLO etiqueta vendida. Lo que sigue es la descripción del
+   procedimiento. (`/sync` → Sincronizar ahora): la tarjeta
    "Etiquetas físicas" muestra N; el resultado reporta "Etiquetas publicadas"
    (no `n/d`); revisar paneles rojo (`duplicadas`) y ámbar (`invalidas`).
-5. ⏳ **Verificación en vivo**: en la web pública buscar `02797` → VESTIDO BRILLO
-   con banner "🏷 Etiqueta 02797"; buscar `02818` → VESTIDO VICTORIANO; `02798`
-   → BRILLO con aviso de unidad vendida; en el admin, `Prendas` → buscar `02797`
-   → banner etiqueta → ficha con chips de etiquetas. En D1:
-   `SELECT COUNT(*) FROM product_etiquetas` ≈ unidades publicables del POS.
+5. ✅ **Verificación en vivo** (11/09/2026 14:34, por API y confirmada por
+   Alain en la interfaz): `02797` → VESTIDO BRILLO `{tipo:'etiqueta',
+   disponible:true, prendas:1}`; `02798` → BRILLO `disponible:false`. VICTORIANO
+   figura en la nube con código `02818`.
 
-Hasta completar el paso 5 NO se puede afirmar que el problema esté resuelto en
-producción.
+### 8.8 Cuota gratuita de D1 y costo por sincronización (11/09/2026 15:50–16:20)
+
+**Incidente.** A las 15:50 el login del admin y `/api/productos?q=…` fallaron
+con `Unexpected token '<'` / página HTML "Error 1101": D1 devolvía el error
+**7500** `exceeded D1's free tier daily row read limit`. Plan gratuito de D1:
+**5.000.000 filas leídas/día** y **100.000 filas escritas/día**, reinicio a las
+00:00 UTC (20:00 Bolivia). No fue un bug del despliegue: las consultas chicas
+seguían respondiendo.
+
+**Costo del diseño original, medido por código** (2647 prendas, 3622 etiquetas):
+- vista del catálogo público: ~8.000 filas leídas (todas las prendas activas +
+  subconsulta de foto + subconsulta de stock por prenda);
+- sync completa: ~75.000 lecturas (cada uno de los 11 lotes releía `products` y
+  `product_variants` completos) y **~10.000 escrituras** aunque nada cambiara
+  (UPDATE de los 2647 productos para marcar `sesion_snapshot` + 3622 INSERT en
+  la zona de aterrizaje + su DELETE).
+- Con la sync automática cada 10 min (144/día): ~11 M lecturas y ~390.000
+  escrituras diarias → ambas cuotas agotadas todos los días. **Incompatible con
+  el plan gratuito.**
+
+**Decisión de Alain**: optimizar el código y seguir en el plan gratuito (Workers
+Paid, USD 5/mes, queda como alternativa si el tráfico del catálogo crece).
+
+**Cambios (solo nube, `ianvs007/tienda-virtual` `9747689..3d6f733`; sin
+migración; el POS y el protocolo NO cambian):**
+1. `lib/syncV2.js::leerProductosDelLote`: cada lote lee SOLO los productos con
+   alguno de sus `global_id` o `codigo` (`IN` por trozos de 100 parámetros, en
+   un `batch`) y las variantes de esos productos → ~800 filas por lote.
+2. `lib/sesionSync.js` (nuevo): la presencia de la sesión vive en dos filas de
+   `settings` — `sync_sesion:<sesion>:productos` (JSON de ids vistos) y
+   `sync_sesion:<sesion>:etiquetas` (JSON `{ "etiqueta|globalId": 0|1 }`) —
+   leídas y reescritas una vez por lote. Se limpian al abrir la SIGUIENTE sesión
+   del dispositivo, no al finalizar: así un `finalizar` repetido (respuesta
+   perdida tras el commit) vuelve a dar ok sin escribir nada.
+3. `planificarSnapshot` escribe la fila del producto SOLO si cambia nombre,
+   precio, código o se reactiva (`resumen.sinCambios`, `plan.idsVistos`).
+4. `finalizarSesion`: una lectura del catálogo (`id, global_id, activo`) sirve
+   para desactivar por `id IN (...)` los activos ausentes de la presencia y para
+   resolver `product_id` de las etiquetas; `planificarPublicacionEtiquetas`
+   (pura) compara presencia vs publicado y solo salen sentencias para las
+   diferencias.
+5. `GET /api/productos`: caché de borde de 60 s (Cache API, clave = URL sin
+   cookies, `Cache-Control: public, max-age=0, s-maxage=60`). El stock mostrado
+   puede atrasarse hasta 60 s; el checkout valida contra D1.
+6. `functions/_middleware.js`: cualquier excepción en `/api/*` responde JSON —
+   503 `d1_sin_cuota` con mensaje en español si es la cuota, 500 `interno` en
+   otro caso. Verificado en producción tras el deploy: `q=02797` → 503 JSON.
+
+**Costo ahora**: sync completa ≈ 15.000 lecturas (11 × ~800 + catálogo 2647 +
+publicadas 3622) y escrituras solo de lo que cambió (+ ~20 filas de presencia).
+Sync automática cada 10 min ≈ 2,2 M lecturas/día (44 % de la cuota).
+**Recomendación operativa: intervalo de 15–30 min** en la central para dejar
+margen al catálogo público. Tests: 64/64 (`cuotaD1.test.js` nuevo; `fakeD1.js`
+cuenta filas leídas/escritas por tabla y un test comprueba que una sync sin
+cambios no escribe ningún producto ni etiqueta).

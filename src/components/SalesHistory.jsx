@@ -443,7 +443,26 @@ export default function SalesHistory() {
                                         </td>
                                         <td className="px-4 py-3">
                                             <div className="flex flex-col gap-1">
-                                                <span className="badge-blue capitalize w-fit">{s.paymentMethod}</span>
+                                                {s.paymentMethod === 'en_linea' || s.channel === 'venta_en_linea' ? (
+                                                    <span className="w-fit rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold uppercase text-violet-800">
+                                                        Venta en línea
+                                                    </span>
+                                                ) : (
+                                                    <span className="badge-blue capitalize w-fit">{s.paymentMethod}</span>
+                                                )}
+                                                {s.pedidoRefWeb && (
+                                                    <span className="font-mono text-[10px] text-gray-500">#{s.pedidoRefWeb}</span>
+                                                )}
+                                                {s.deliveryStatus === 'pendiente_entrega' && s.status !== 'annulled' && (
+                                                    <span className="w-fit rounded-full bg-amber-100 px-2 py-0.5 text-[9px] font-bold uppercase text-amber-800">
+                                                        Pendiente de entrega
+                                                    </span>
+                                                )}
+                                                {s.deliveryStatus === 'entregado' && s.status !== 'annulled' && (
+                                                    <span className="w-fit rounded-full bg-green-100 px-2 py-0.5 text-[9px] font-bold uppercase text-green-800 flex items-center gap-0.5">
+                                                        <CheckCircle size={10} /> Entregado
+                                                    </span>
+                                                )}
                                                 {s.status === 'annulled' && (
                                                     <span className="text-[9px] font-bold text-red-600 flex items-center gap-0.5 uppercase"><XCircle size={10} /> Anulada</span>
                                                 )}
@@ -457,7 +476,22 @@ export default function SalesHistory() {
                                                     printTicketGlobal(s.id, enriched, s.total, s.paymentMethod || 'historial', s.received || s.total, s.change || 0, { name: s.sellerName }, s.discount || 0, s.clientName ? { name: s.clientName, phone: s.clientPhone } : null);
                                                 }} className="text-blue-500 hover:text-blue-700 transition-colors" title="Reimprimir Nota de Venta"><Printer size={15} /></button>
                                                 {user?.role === 'admin' && (
-                                                    <button onClick={() => handleAnnul(s)} disabled={s.status === 'annulled'} className={`transition-colors ${s.status === 'annulled' ? 'text-gray-200 cursor-not-allowed' : 'text-orange-400 hover:text-orange-600'}`} title="Anular venta"><RotateCcw size={15} /></button>
+                                                    <button
+                                                        onClick={() => handleAnnul(s)}
+                                                        disabled={s.status === 'annulled' || s.paymentMethod === 'en_linea' || s.channel === 'venta_en_linea'}
+                                                        className={`transition-colors ${
+                                                            s.status === 'annulled' || s.paymentMethod === 'en_linea' || s.channel === 'venta_en_linea'
+                                                                ? 'text-gray-200 cursor-not-allowed'
+                                                                : 'text-orange-400 hover:text-orange-600'
+                                                        }`}
+                                                        title={
+                                                            s.paymentMethod === 'en_linea' || s.channel === 'venta_en_linea'
+                                                                ? 'Las ventas en línea se cancelan desde la tienda web'
+                                                                : 'Anular venta'
+                                                        }
+                                                    >
+                                                        <RotateCcw size={15} />
+                                                    </button>
                                                 )}
                                             </div>
                                         </td>

@@ -502,3 +502,31 @@ db.version(24).stores({
     cashOpenings: '++id, date, userId, openedAt',
     webEventos: 'id, tipo, productId, pedidoRef, aplicadoEn',
 });
+
+// ==============================================================================
+// 🌐 ESQUEMA v25 — HISTORIAL VENTA EN LÍNEA (sync v2 confirmacion/entrega)
+// ==============================================================================
+// Indexa `pedidoRefWeb` para agrupar ítems del mismo pedido web y actualizar
+// deliveryStatus (pendiente_entrega → entregado) sin tocar caja.
+db.version(25).stores({
+    products: '++id, globalId, name, barcode, category, brand, size, color, stock, cost, price, shortCode, active, createdAt, updatedAt, hasEmbedding',
+    kardex: '++id, productId, date, type',
+    sales: '++id, date, total, sellerId, paymentMethod, status, shiftId, pedidoRefWeb, channel, deliveryStatus',
+    expenseCategories: '++id, name',
+    expenses: '++id, date, categoryId, amount, paymentMethod, userId, registeredBy, shiftId',
+    users: '++id, username, role',
+    settings: 'key',
+    reservations: '++id, clientName, clientPhone, productId, status, createdAt, sellerId',
+    reservationPayments: '++id, reservationId, date, status, userId, shiftId',
+    categories: '++id, name',
+    productNames: '++id, name',
+    productFields: '++id, name, type',
+    barcodes: '++id, productId, barcode, shortCode, used, createdAt',
+    brands: '++id, name',
+    colors: '++id, name',
+    cashClosures: '++id, date, userId, closedAt, openingId',
+    cashClosureHistory: '++id, closureId, date, changedBy',
+    securityLogs: '++id, timestamp, eventType, userId',
+    cashOpenings: '++id, date, userId, openedAt',
+    webEventos: 'id, tipo, productId, pedidoRef, aplicadoEn',
+});

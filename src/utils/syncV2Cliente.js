@@ -13,7 +13,9 @@
  *   4. PULL corto: recoger ventas ocurridas durante el push.
  *
  * Cualquier corte se resuelve volviendo a llamar a `sincronizarV2()`.
- * No toca `sales` ni caja: el dinero de la web va al banco.
+ * Stock/kárdex: eventos venta/cancelacion/expiracion.
+ * Historial (sin caja): confirmacion → Venta en línea / Pendiente de entrega;
+ * entrega → Entregado. El dinero de la web va al banco, no a la caja del POS.
  */
 
 import {

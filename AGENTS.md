@@ -1,4 +1,4 @@
-# CLAUDE.md — ropa-cbba (Tienda de Ropa)
+# AGENTS.md — ropa-cbba (Tienda de Ropa)
 
 POS **offline** para tienda de ropa en Cochabamba: React 19 + Vite + Dexie.js
 (IndexedDB, schema **v23**) + Tailwind. Corre en 3 máquinas de producción como
@@ -281,7 +281,7 @@ Verificación en frío de ambos proyectos desde Qwen Code local:
   `migrations apply` es seguro de nuevo.
 - ⚠️ DESPLIEGUE POS: zip `ropa-cbba-v5-globalid-20260904.zip` armado en
   `D:\software\MisProyectos` (1.36 MB, 138 entradas; dist con globalId, sin
-  node_modules/.git/.claude/backups ni basura de agentes). PENDIENTE: copiarlo
+  node_modules/.git/.Codex/backups ni basura de agentes). PENDIENTE: copiarlo
   a mano a las 3 máquinas.
 - ⏸️ Pendiente visual: pestaña "Cierres de Caja" con `cashClosures` reales de
   producción.

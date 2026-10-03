@@ -2,7 +2,7 @@ import { db } from './schema';
 import { filterClosureMovements } from '../utils/closureMovements';
 import { agruparDuplicadosProductos, planificarReasignacionDuplicados } from '../utils/duplicateShortCodes';
 import { planificarAlineacionEtiquetas } from '../utils/alinearCodigosEtiqueta';
-import { CLAVES_SYNC_V2, INTERVALO_AUTO_DEFAULT_MIN } from '../utils/syncV2';
+import { CLAVES_SYNC_V2, INTERVALO_AUTO_DEFAULT_MIN, PAGO_VENTA_EN_LINEA } from '../utils/syncV2';
 
 // ==============================================================================
 // 🔧 HELPERS — Funciones utilitarias de base de datos
@@ -237,24 +237,45 @@ export async function idsEventosYaAplicados(ids = []) {
 
 /**
  * Ejecuta el plan de `planificarAplicacionEventos` en UNA transacción:
- * stock + unidades + kárdex + registro en webEventos (operaciones Y huérfanos,
- * para no reintentar eternamente) + avance de `ultimoEventoAck`.
- * Si algo falla, Dexie revierte todo y el ack no avanza.
+ * stock + unidades + kárdex + historial venta en línea + registro en webEventos
+ * (operaciones Y huérfanos, para no reintentar eternamente) + avance de
+ * `ultimoEventoAck`. Si algo falla, Dexie revierte todo y el ack no avanza.
  */
 export async function aplicarPlanEventos(plan) {
-    return db.transaction('rw', [db.products, db.barcodes, db.kardex, db.webEventos, db.settings], async () => {
+    return db.transaction(
+        'rw',
+        [db.products, db.barcodes, db.kardex, db.webEventos, db.settings, db.sales],
+        async () => {
         const ahora = new Date().toISOString();
         const fechaLocal = getLocalISOString();
 
         for (const op of plan.operaciones) {
-            await db.products.update(op.productId, { stock: op.stockNuevo, updatedAt: ahora });
+            // Historial sin stock (confirmacion / entrega).
+            if (op.soloHistorial && op.historial) {
+                await aplicarHistorialVentaEnLinea(op, fechaLocal);
+                await db.webEventos.put({
+                    id: op.eventoId,
+                    tipo: op.tipo,
+                    productId: op.productId,
+                    pedidoRef: op.pedidoRef,
+                    delta: 0,
+                    resultado: op.aviso ? 'aplicado_con_aviso' : 'aplicado',
+                    aviso: op.aviso || null,
+                    aplicadoEn: ahora,
+                });
+                continue;
+            }
+
+            if (op.productId != null && op.stockNuevo != null) {
+                await db.products.update(op.productId, { stock: op.stockNuevo, updatedAt: ahora });
+            }
             for (const u of op.unidadesAMarcar) {
                 await db.barcodes.update(u.id, { used: true, usedRef: `WEB #${op.pedidoRef}` });
             }
             for (const u of op.unidadesALiberar) {
                 await db.barcodes.update(u.id, { used: false, usedRef: '' });
             }
-            if (op.kardex.qty > 0) {
+            if (op.kardex?.qty > 0 && op.productId != null) {
                 await db.kardex.add({
                     productId: op.productId,
                     date: fechaLocal,
@@ -265,6 +286,16 @@ export async function aplicarPlanEventos(plan) {
                     unitCodes: (op.kardex.type === 'salida' ? op.unidadesAMarcar : op.unidadesALiberar)
                         .map(u => ({ shortCode: u.shortCode || '', barcode: u.barcode || '' })),
                 });
+            }
+            // Cancelación/expiración: si ya había venta en historial, anularla.
+            if (op.historial?.accion === 'cancelar' && op.pedidoRef) {
+                const venta = await db.sales.where('pedidoRefWeb').equals(op.pedidoRef).first();
+                if (venta && venta.status !== 'annulled') {
+                    await db.sales.update(venta.id, {
+                        status: 'annulled',
+                        deliveryStatus: 'cancelado',
+                    });
+                }
             }
             await db.webEventos.put({
                 id: op.eventoId,
@@ -297,6 +328,62 @@ export async function aplicarPlanEventos(plan) {
             }
         }
         return plan.resumen;
+    });
+}
+
+/**
+ * Alta / entrega de venta web en historial. No toca caja (paymentMethod en_linea,
+ * sellerId null). Agrupa ítems del mismo pedidoRefWeb en una sola venta.
+ */
+async function aplicarHistorialVentaEnLinea(op, fechaLocal) {
+    const ref = op.pedidoRef;
+    if (!ref) return;
+    const h = op.historial;
+    let venta = await db.sales.where('pedidoRefWeb').equals(ref).first();
+
+    if (h.accion === 'entregar') {
+        if (venta) {
+            await db.sales.update(venta.id, { deliveryStatus: 'entregado' });
+        }
+        return;
+    }
+
+    // alta (confirmacion)
+    const item = h.item;
+    if (!item) return;
+    if (venta) {
+        const items = [...(venta.items || [])];
+        const ya = items.some((it) => it.eventoId === item.eventoId);
+        if (!ya) {
+            items.push(item);
+            const total = items.reduce((s, it) => s + (Number(it.price) || 0) * (Number(it.qty) || 0), 0);
+            await db.sales.update(venta.id, {
+                items,
+                total,
+                deliveryStatus: venta.deliveryStatus || 'pendiente_entrega',
+                status: venta.status === 'annulled' ? 'annulled' : 'active',
+            });
+        }
+        return;
+    }
+
+    const fecha = h.creadoEn
+        ? (String(h.creadoEn).includes('T') ? h.creadoEn : String(h.creadoEn).replace(' ', 'T') + 'Z')
+        : fechaLocal;
+    await db.sales.add({
+        date: fecha,
+        items: [item],
+        total: (Number(item.price) || 0) * (Number(item.qty) || 0),
+        paymentMethod: PAGO_VENTA_EN_LINEA,
+        received: 0,
+        change: 0,
+        sellerId: null,
+        sellerName: 'Tienda virtual',
+        status: 'active',
+        channel: 'venta_en_linea',
+        pedidoRefWeb: ref,
+        deliveryStatus: h.deliveryStatus || 'pendiente_entrega',
+        excludeFromCash: true,
     });
 }
 
@@ -687,8 +774,13 @@ export async function calculateClosureData(date, userId = null, shiftId = null, 
             activeResIds.has(p.reservationId)
         );
 
+        // Ventas web (en_linea) no entran a caja ni al total de cierre del turno.
+        const salesCaja = filteredSales.filter(
+            (s) => s.paymentMethod !== 'reserva' && s.paymentMethod !== 'en_linea' && !s.excludeFromCash
+        );
+
         const allMoneyIn = [
-            ...filteredSales.filter(s => s.paymentMethod !== 'reserva').map(s => ({ ...s, tipo: 'VENTA', amount: s.total || 0, method: s.paymentMethod || 'efectivo' })),
+            ...salesCaja.map(s => ({ ...s, tipo: 'VENTA', amount: s.total || 0, method: s.paymentMethod || 'efectivo' })),
             ...filteredRes.map(p => ({ ...p, tipo: 'RESERVA', amount: p.amount || 0, method: p.paymentMethod || 'efectivo' }))
         ];
 
