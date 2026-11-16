@@ -10,7 +10,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { findPendingClosureDates } from '../utils/pendingClosures';
+import {
+    findPendingClosureDates,
+    summarizePendingClosureDays,
+    planMassRegularization,
+} from '../utils/pendingClosures';
 
 const TODAY = '2026-07-08';
 const U = 7; // userId/sellerId del vendedor de los casos
@@ -89,6 +93,19 @@ describe('findPendingClosureDates', () => {
         expect(result).toEqual([]);
     });
 
+    it('ventas en línea (en_linea), entregas de reserva o excludeFromCash no generan falsos pendientes', () => {
+        const result = findPendingClosureDates({
+            sales: [
+                { date: '2026-07-04T14:00:00.000Z', sellerId: null, total: 120, paymentMethod: 'en_linea' },
+                { date: '2026-07-05T14:00:00.000Z', sellerId: U, total: 90, paymentMethod: 'reserva' },
+                { date: '2026-07-06T14:00:00.000Z', sellerId: U, total: 80, excludeFromCash: true },
+            ],
+            payments: [], closures: [], openings: [],
+            today: TODAY,
+        });
+        expect(result).toEqual([]);
+    });
+
     it('apertura de turno sin cierre → pendiente aunque no haya ventas', () => {
         const result = findPendingClosureDates({
             sales: [], payments: [], closures: [],
@@ -135,3 +152,109 @@ describe('findPendingClosureDates', () => {
         expect(findPendingClosureDates({ sales: [sale('2026-07-06')], today: null })).toEqual([]);
     });
 });
+
+describe('summarizePendingClosureDays y planMassRegularization', () => {
+    it('resume correctamente cantidad de movimientos y efectivo esperado por día pendiente', () => {
+        const summary = summarizePendingClosureDays({
+            sales: [
+                { date: '2026-07-05T10:00:00.000Z', sellerId: U, total: 150, paymentMethod: 'efectivo' },
+                { date: '2026-07-05T11:00:00.000Z', sellerId: U, total: 80, paymentMethod: 'qr' },
+            ],
+            payments: [
+                { date: '2026-07-05T12:00:00.000Z', userId: U, amount: 40, paymentMethod: 'efectivo' },
+            ],
+            expenses: [
+                { date: '2026-07-05T13:00:00.000Z', userId: U, amount: 30, paymentMethod: 'efectivo' },
+            ],
+            closures: [],
+            openings: [
+                { id: 10, date: '2026-07-05', userId: U, cashStart: 100 },
+                { id: 11, date: '2026-07-06', userId: U, cashStart: 50 },
+            ],
+            today: TODAY,
+        });
+
+        expect(summary).toHaveLength(2);
+        expect(summary[0]).toMatchObject({
+            date: '2026-07-05',
+            salesCount: 2,
+            paymentsCount: 1,
+            expectedCash: 260, // 100 (fondo) + 150 + 40 - 30
+            label: '3 mov.',
+        });
+        expect(summary[1]).toMatchObject({
+            date: '2026-07-06',
+            salesCount: 0,
+            paymentsCount: 0,
+            expectedCash: 50,
+            label: 'Turno sin ventas',
+        });
+    });
+
+    it('planifica regularización masiva (CREAR y PROMOVER) dejando 0 días pendientes al aplicarse', () => {
+        const sales = [
+            { date: '2026-07-04T10:00:00.000Z', sellerId: 2, total: 200, paymentMethod: 'efectivo', items: [{ qty: 2 }] },
+            { date: '2026-07-05T10:00:00.000Z', sellerId: 3, total: 120, paymentMethod: 'efectivo', items: [{ qty: 1 }] },
+        ];
+        // En 2026-07-05 cerró el usuario 2 (normal), pero vendió el usuario 3 → sigue pendiente
+        const closures = [
+            { id: 99, date: '2026-07-05', userId: 2, cashStart: 50, cashOnHand: 170, totalSales: 0, closedAt: '2026-07-05T20:00:00.000Z' },
+        ];
+        const openings = [
+            { id: 5, date: '2026-07-04', userId: 2, cashStart: 100 },
+        ];
+        const users = [
+            { id: 1, username: 'admin', role: 'admin' },
+            { id: 2, username: 'cajera', role: 'seller' },
+        ];
+
+        const pendingDates = findPendingClosureDates({ sales, payments: [], closures, openings, today: TODAY });
+        expect(pendingDates).toEqual(['2026-07-04', '2026-07-05']);
+
+        const plan = planMassRegularization({
+            pendingDates,
+            sales,
+            payments: [],
+            expenses: [],
+            closures,
+            openings,
+            users,
+            activeUser: { id: 2, username: 'cajera', name: 'Cajera', role: 'seller' },
+            nowISO: '2026-07-08T19:00:00.000Z',
+        });
+
+        expect(plan).toHaveLength(2);
+        expect(plan[0].action).toBe('CREAR');
+        expect(plan[0].insert).toMatchObject({
+            date: '2026-07-04',
+            cashStart: 100,
+            totalSales: 200,
+            cashOnHand: 300,
+            cashDifference: 0,
+            retroactive: true,
+        });
+
+        expect(plan[1].action).toBe('PROMOVER');
+        expect(plan[1].closureId).toBe(99);
+        expect(plan[1].update).toMatchObject({
+            totalSales: 120,
+            retroactive: true,
+            cashDifference: 0,
+        });
+
+        // Simular aplicación del plan y verificar que ya no quedan días pendientes
+        const updatedClosures = [
+            plan[0].insert,
+            { ...closures[0], ...plan[1].update },
+        ];
+        const remaining = findPendingClosureDates({
+            sales,
+            payments: [],
+            closures: updatedClosures,
+            openings,
+            today: TODAY,
+        });
+        expect(remaining).toEqual([]);
+    });
+});
+

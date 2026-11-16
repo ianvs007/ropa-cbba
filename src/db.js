@@ -45,6 +45,7 @@ export {
     calculateClosureData,
     syncClosureIfDateExists,
     calculateMonthlySummary,
+    regularizePendingClosures,
     getLocalISOString,
 } from './db/helpers';
 

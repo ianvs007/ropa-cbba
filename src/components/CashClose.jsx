@@ -3,9 +3,9 @@ import { useLocation } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
     db, calculateClosureData, recordCashClosureChange,
-    automaticcorrectDataIntegrity, getLocalISOString
+    automaticcorrectDataIntegrity, regularizePendingClosures, getLocalISOString
 } from '../db';
-import { usePendingClosureDates } from '../hooks/usePendingClosureDates';
+import { usePendingClosureDates, usePendingClosuresSummary } from '../hooks/usePendingClosureDates';
 import { canCloseCashDate } from '../utils/pendingClosures';
 import {
     DollarSign, TrendingUp, Receipt, Package, CheckCircle,
@@ -16,6 +16,7 @@ import { useNotification } from '../hooks/useNotification';
 import { formatCurrency, printCashCloseGlobal } from '../utils';
 import useSecureDate from '../hooks/useSecureDate';
 import useCashRegister from '../hooks/useCashRegister';
+import CashOpenModal from './CashOpenModal';
 import { useUser } from '../contexts/UserContext';
 
 /**
@@ -26,7 +27,13 @@ export default function CashClose() {
     const { user } = useUser();
     // ── Inicializar seguridad de fecha ────────────────────────────────
     const { today: frozenToday, isManipulated, logEvent } = useSecureDate();
-    const { shiftId: activeShiftId, opening: activeOpening, shiftNumber } = useCashRegister();
+    const {
+        isOpen: shiftIsOpen,
+        shiftId: activeShiftId,
+        opening: activeOpening,
+        shiftNumber,
+        openCash,
+    } = useCashRegister();
     
     // ── Estados ────────────────────────────────────────────────────────
     const [date, setDate] = React.useState(frozenToday || getLocalISOString().slice(0, 10));
@@ -35,6 +42,12 @@ export default function CashClose() {
     // fuerza currentShiftId = null para que el cálculo no use el turno de hoy
     const [dayLevelRetro, setDayLevelRetro] = React.useState(false);
     const [step, setStep] = React.useState(1);
+
+    // Estados para gestión compacta y regularización masiva de pendientes
+    const [showAllPending, setShowAllPending] = React.useState(false);
+    const [confirmRegularizeModal, setConfirmRegularizeModal] = React.useState(false);
+    const [regularizingAll, setRegularizingAll] = React.useState(false);
+    const [manualOpenModal, setManualOpenModal] = React.useState(false);
 
     // Sincronizar fecha si frozenToday tarda en cargar (sin pisar una
     // selección activa de turno pendiente o día retroactivo)
@@ -46,6 +59,11 @@ export default function CashClose() {
 
     // ── Fechas con cierre pendiente (misma fuente que el banner) ──
     const pendingCloseDates = usePendingClosureDates(frozenToday);
+    const pendingDaysSummary = usePendingClosuresSummary(frozenToday) || [];
+    const summaryByDate = React.useMemo(
+        () => Object.fromEntries(pendingDaysSummary.map(item => [item.date, item])),
+        [pendingDaysSummary]
+    );
 
     // Datos del arqueo
     const [cashStart, setCashStart] = React.useState('');
@@ -396,89 +414,212 @@ export default function CashClose() {
         });
     };
 
+    const returnToToday = React.useCallback(() => {
+        setDate(frozenToday || getLocalISOString().slice(0, 10));
+        setSelectedShiftId(null);
+        setDayLevelRetro(false);
+        setCashStart('');
+        setCashCount('');
+        setNotes('');
+        setExistingId(null);
+        setIsEditing(false);
+        setStep(1);
+    }, [frozenToday]);
+
+    // ── Regularizar todos los días pendientes en 1 clic ──
+    const handleRegularizeAll = async () => {
+        if (regularizingAll || !(pendingCloseDates || []).length) return;
+        setRegularizingAll(true);
+        try {
+            const res = await regularizePendingClosures({
+                dates: pendingCloseDates,
+                today: frozenToday,
+                user,
+            });
+            setConfirmRegularizeModal(false);
+            returnToToday();
+            showMsg('success', `✅ Se regularizaron y cerraron ${res.count} día(s) pendientes correctamente`);
+        } catch (err) {
+            console.error('Error al regularizar días pendientes:', err);
+            showMsg('error', `Error al regularizar: ${err.message}`);
+        } finally {
+            setRegularizingAll(false);
+        }
+    };
+
+    const isRetroMode = !!(selectedShiftId || dayLevelRetro);
+    const pendingList = pendingCloseDates || [];
+    const visiblePendingDates = showAllPending ? pendingList : pendingList.slice(0, 6);
+
     // ── Render: Paso 1 - Formulario de Cierre (Resumen + Arqueo) ────────
     const renderClosureForm = () => (
         <div className="space-y-6">
-            {/* Encabezado Principal */}
-            <div className="bg-gradient-to-r from-blue-600 to-indigo-700 rounded-2xl p-6 text-white shadow-xl shadow-blue-900/20">
-                <div className="flex items-center justify-between">
+            {/* Encabezado Principal con estado claro del turno y acciones rápidas */}
+            <div className={`rounded-2xl p-6 text-white shadow-xl transition-colors ${
+                isRetroMode
+                    ? 'bg-gradient-to-r from-amber-600 to-orange-700 shadow-orange-900/20'
+                    : 'bg-gradient-to-r from-blue-600 to-indigo-700 shadow-blue-900/20'
+            }`}>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                     <div>
-                        <div className="flex items-center gap-2 mb-1">
-                            <h2 className="text-xl font-black uppercase tracking-tight">Cierre de Caja</h2>
+                        <div className="flex items-center gap-2 mb-1.5">
+                            <h2 className="text-xl font-black uppercase tracking-tight">
+                                {isRetroMode ? 'Regularización de Caja (Día Anterior)' : 'Abrir / Cerrar Caja'}
+                            </h2>
                         </div>
-                        <div className="flex items-center gap-2 text-blue-100 text-sm font-bold bg-blue-900/30 px-3 py-1.5 rounded-xl border border-blue-400/20">
-                            <div className="w-2 h-2 rounded-full bg-green-400 shadow-sm shadow-green-400" />
-                            <span className="opacity-70 uppercase text-[10px] tracking-widest">TURNO:</span>
-                            <span className="text-white">{user?.name || user?.username || 'USUARIO DESCONOCIDO'}</span>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <div className="flex items-center gap-2 text-blue-100 text-xs font-bold bg-black/20 px-3 py-1.5 rounded-xl border border-white/15">
+                                <div className={`w-2 h-2 rounded-full ${
+                                    isRetroMode ? 'bg-amber-300' : (shiftIsOpen ? 'bg-green-400 shadow-sm shadow-green-400' : 'bg-gray-300')
+                                }`} />
+                                <span className="opacity-80 uppercase text-[10px] tracking-widest">
+                                    {isRetroMode
+                                        ? 'MODO RETROACTIVO:'
+                                        : (shiftIsOpen ? `CAJA ABIERTA (TURNO #${shiftNumber || 1}):` : 'CAJA HOY:')}
+                                </span>
+                                <span className="text-white">{user?.name || user?.username || 'USUARIO'}</span>
+                            </div>
+                            {todayOpening && !isRetroMode && (
+                                <span className="text-[11px] font-bold bg-white/15 px-3 py-1.5 rounded-xl border border-white/10">
+                                    Fondo inicial: {formatCurrency(todayOpening.cashStart || 0, currency)}
+                                </span>
+                            )}
                         </div>
-                        <p className="text-blue-100/80 text-[10px] mt-2 font-medium italic">
-                            ID: {user?.id || 'NO-ID'} • {new Date(date + 'T12:00:00').toLocaleDateString('es', {
+                        <p className="text-white/80 text-xs mt-2 font-medium">
+                            📅 {new Date(date + 'T12:00:00').toLocaleDateString('es', {
                                 weekday: 'long',
                                 day: 'numeric',
-                                month: 'long'
+                                month: 'long',
+                                year: 'numeric',
                             })}
                         </p>
                     </div>
-                    <div className="w-16 h-16 bg-white/10 rounded-2xl flex items-center justify-center border border-white/10 backdrop-blur-sm">
-                        <Wallet size={32} />
+                    <div className="flex items-center gap-3 self-start sm:self-center">
+                        {isRetroMode ? (
+                            <button
+                                onClick={returnToToday}
+                                className="px-4 py-2.5 bg-white text-orange-700 font-black text-xs uppercase tracking-wider rounded-xl shadow hover:bg-orange-50 transition"
+                            >
+                                ← Volver al Turno de Hoy
+                            </button>
+                        ) : !shiftIsOpen && (
+                            <button
+                                onClick={() => setManualOpenModal(true)}
+                                className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-white font-black text-xs uppercase tracking-wider rounded-xl shadow-lg transition flex items-center gap-1.5 border border-emerald-300/40"
+                            >
+                                🔓 Abrir Nuevo Turno
+                            </button>
+                        )}
+                        <div className="w-14 h-14 bg-white/10 rounded-2xl hidden sm:flex items-center justify-center border border-white/10 backdrop-blur-sm">
+                            <Wallet size={28} />
+                        </div>
                     </div>
                 </div>
             </div>
 
-            {/* ── Días pendientes de cierre (ventas/abonos o turnos sin cerrar) ── */}
-            {(pendingCloseDates || []).length > 0 && !selectedShiftId && !dayLevelRetro && (
-                <div className="bg-red-50 border-2 border-red-200 rounded-2xl p-5 shadow-sm">
-                    <div className="flex items-center gap-3 mb-3">
-                        <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center shrink-0">
-                            <AlertTriangle size={20} className="text-red-600" />
+            {/* ── Panel Compacto e Inteligente de Días Pendientes de Cierre ── */}
+            {pendingList.length > 0 && !isRetroMode && (
+                <div className="bg-red-50/90 border-2 border-red-200 rounded-2xl p-5 shadow-sm space-y-4">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                        <div className="flex items-start gap-3">
+                            <div className="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center shrink-0 mt-0.5">
+                                <AlertTriangle size={20} className="text-red-600" />
+                            </div>
+                            <div>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                    <h3 className="font-black text-red-900 text-sm">
+                                        Tienes {pendingList.length} día(s) anterior(es) sin cerrar caja
+                                    </h3>
+                                    <span className="text-[10px] font-bold uppercase tracking-wider bg-red-200/80 text-red-800 px-2 py-0.5 rounded-full">
+                                        Historial pendiente
+                                    </span>
+                                </div>
+                                <p className="text-red-700/80 text-xs mt-0.5 leading-relaxed">
+                                    Son fechas pasadas donde quedaron ventas, abonos o turnos abiertos (incluyendo datos de prueba) sin cierre registrado. Puedes regularizar todos en 1 clic o revisar uno por uno.
+                                </p>
+                            </div>
                         </div>
-                        <div>
-                            <h3 className="font-bold text-red-800 text-sm">⚠️ Días pendientes de cierre</h3>
-                            <p className="text-red-500 text-xs">Tienes {pendingCloseDates.length} día(s) sin cerrar caja. Selecciona uno para regularizarlo.</p>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                            <button
+                                onClick={() => setConfirmRegularizeModal(true)}
+                                className="px-4 py-2.5 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 text-white text-xs font-black uppercase tracking-wider rounded-xl shadow-md transition flex items-center gap-1.5"
+                            >
+                                <CheckCircle size={15} />
+                                Regularizar todos ({pendingList.length})
+                            </button>
                         </div>
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                        {pendingCloseDates.map(d => {
+
+                    {/* Grilla compacta de días pendientes (máx 6 por defecto) */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                        {visiblePendingDates.map(d => {
                             const shift = (pendingShifts || []).find(s => s.date === d);
+                            const info = summaryByDate[d];
                             return (
                                 <button
                                     key={d}
                                     onClick={() => selectPendingDay(d)}
-                                    className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white text-xs font-bold rounded-xl hover:bg-red-700 transition shadow-sm"
+                                    className="flex items-center justify-between gap-2 px-3.5 py-2.5 bg-white hover:bg-red-600 text-red-900 hover:text-white border border-red-200 hover:border-red-600 rounded-xl transition shadow-xs group text-left"
                                 >
-                                    <Receipt size={14} />
-                                    {new Date(d + 'T12:00:00').toLocaleDateString('es', { weekday: 'short', day: 'numeric', month: 'short' })}
-                                    {shift && ` • ${new Date(shift.openedAt).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}`}
-                                    <span className="opacity-75">— Cerrar este día</span>
+                                    <div className="min-w-0">
+                                        <p className="text-xs font-black capitalize truncate">
+                                            {new Date(d + 'T12:00:00').toLocaleDateString('es', {
+                                                weekday: 'short',
+                                                day: 'numeric',
+                                                month: 'short',
+                                                year: 'numeric',
+                                            })}
+                                        </p>
+                                        <p className="text-[11px] text-red-500 group-hover:text-red-100 font-semibold truncate">
+                                            {info
+                                                ? `${info.label} • Esp: ${formatCurrency(info.expectedCash, currency)}`
+                                                : (shift ? `Turno abierto ${new Date(shift.openedAt).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}` : 'Pendiente de arqueo')}
+                                        </p>
+                                    </div>
+                                    <span className="text-[10px] font-black uppercase tracking-wider bg-red-100 group-hover:bg-white/20 text-red-700 group-hover:text-white px-2.5 py-1 rounded-lg shrink-0">
+                                        Cerrar →
+                                    </span>
                                 </button>
                             );
                         })}
                     </div>
+
+                    {pendingList.length > 6 && (
+                        <div className="flex items-center justify-between pt-1 border-t border-red-200/60">
+                            <span className="text-[11px] text-red-600 font-medium">
+                                Mostrando {visiblePendingDates.length} de {pendingList.length} días pendientes
+                            </span>
+                            <button
+                                onClick={() => setShowAllPending(prev => !prev)}
+                                className="text-xs font-black text-red-700 hover:text-red-900 underline cursor-pointer"
+                            >
+                                {showAllPending ? '▲ Mostrar menos' : `▼ Ver los ${pendingList.length} días`}
+                            </button>
+                        </div>
+                    )}
                 </div>
             )}
 
             {/* Info de turno/día pendiente seleccionado */}
-            {(selectedShiftId || dayLevelRetro) && (
-                <div className="flex items-center gap-3 bg-orange-50 border border-orange-200 p-3 rounded-xl">
-                    <span className="text-orange-600 text-xs font-bold">
-                        📅 Cerrando {selectedShiftId ? 'turno' : 'día'} pendiente del {new Date(date + 'T12:00:00').toLocaleDateString('es', { day: 'numeric', month: 'long' })}
-                        {' '}(cierre retroactivo — quedará auditado)
-                    </span>
+            {isRetroMode && (
+                <div className="flex flex-wrap items-center justify-between gap-3 bg-amber-50 border-2 border-amber-200 p-4 rounded-2xl">
+                    <div className="flex items-center gap-2.5">
+                        <span className="text-lg">📅</span>
+                        <div>
+                            <p className="text-amber-900 text-xs font-black uppercase tracking-wide">
+                                Regularizando {selectedShiftId ? 'turno' : 'día'} del {new Date(date + 'T12:00:00').toLocaleDateString('es', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+                            </p>
+                            <p className="text-amber-700 text-[11px]">
+                                Este cierre se guardará como retroactivo y limpiará la fecha pendiente para todos los usuarios.
+                            </p>
+                        </div>
+                    </div>
                     <button
-                        onClick={() => {
-                            setDate(frozenToday || getLocalISOString().slice(0, 10));
-                            setSelectedShiftId(null);
-                            setDayLevelRetro(false);
-                            setCashStart('');
-                            setCashCount('');
-                            setNotes('');
-                            setExistingId(null);
-                            setIsEditing(false);
-                            setStep(1);
-                        }}
-                        className="text-[10px] text-pink-600 font-bold underline hover:text-pink-800 ml-auto"
+                        onClick={returnToToday}
+                        className="px-3 py-1.5 bg-white border border-amber-300 text-amber-800 text-xs font-bold rounded-xl hover:bg-amber-100 transition"
                     >
-                        ← Volver a hoy
+                        ← Volver al Turno de Hoy
                     </button>
                 </div>
             )}
@@ -488,10 +629,8 @@ export default function CashClose() {
                 <div className="flex-1">
                     <label className="block text-xs font-bold text-pink-400 uppercase mb-1 flex items-center gap-1">
                         <Lock size={12} />
-                        Fecha del Cierre
+                        Fecha del Arqueo
                     </label>
-                    {/* Texto formateado con locale 'es' explícito: el <input type="date">
-                        nativo mostraba MM/DD/YYYY en navegadores con locale en-US */}
                     <input
                         type="text"
                         value={new Date(date + 'T12:00:00').toLocaleDateString('es', { day: '2-digit', month: '2-digit', year: 'numeric' })}
@@ -501,7 +640,7 @@ export default function CashClose() {
                     <p className="text-[10px] text-pink-400 mt-1">
                         {currentShiftId && todayOpening
                             ? `🔄 Turno #${shiftNumber} • Abierto: ${new Date(todayOpening.openedAt).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}`
-                            : '🔐 Fecha congelada al login para seguridad'
+                            : '🔐 Fecha protegida por el control de seguridad de caja'
                         }
                     </p>
                 </div>
@@ -519,15 +658,17 @@ export default function CashClose() {
                     <p className="text-pink-600 font-semibold">{isLoading ? 'Cargando datos...' : 'Datos no disponibles'}</p>
                 </div>
             ) : (!salesData.all || salesData.all.length === 0) ? (
-                /* Si hay turno abierto/pendiente, mostrar aviso pero NO bloquear el cierre */
-                (currentShiftId || todayOpening) ? (
+                /* Si hay turno abierto/pendiente o modo retroactivo, permitir cerrar aunque no haya ventas */
+                (currentShiftId || todayOpening || isRetroMode) ? (
                     <>
-                        <div className="text-center py-6">
-                            <div className="w-16 h-16 bg-amber-50 rounded-full flex items-center justify-center mx-auto mb-3">
-                                <Package size={32} className="text-amber-400" />
+                        <div className="text-center py-6 bg-amber-50/60 border border-amber-200/80 rounded-2xl">
+                            <div className="w-14 h-14 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-2">
+                                <Package size={28} className="text-amber-600" />
                             </div>
-                            <h3 className="text-base font-bold text-amber-800 mb-1">Turno sin ventas registradas</h3>
-                            <p className="text-amber-500 text-xs">No se encontraron ventas ni abonos en este turno, pero puedes cerrarlo igualmente.</p>
+                            <h3 className="text-base font-bold text-amber-900 mb-1">Turno sin ventas en efectivo/QR</h3>
+                            <p className="text-amber-700 text-xs max-w-md mx-auto">
+                                No se registraron ventas ni abonos de caja en esta fecha, pero puedes completar el arqueo y cerrar el turno normalmente.
+                            </p>
                         </div>
 
                         {/* Formulario de Arqueo — siempre visible para turnos abiertos */}
@@ -553,17 +694,19 @@ export default function CashClose() {
                         />
                     </>
                 ) : (
-                    <div className="text-center py-12">
+                    <div className="text-center py-12 bg-white rounded-2xl border border-pink-100 shadow-xs">
                         <div className="w-20 h-20 bg-pink-50 rounded-full flex items-center justify-center mx-auto mb-4">
                             <Package size={40} className="text-pink-300" />
                         </div>
-                        <h3 className="text-lg font-bold text-pink-900 mb-2">Sin actividad registrada</h3>
-                        <p className="text-pink-400 text-sm mb-4">No hay ventas ni abonos en esta fecha</p>
+                        <h3 className="text-lg font-bold text-pink-900 mb-2">Aún no hay actividad hoy</h3>
+                        <p className="text-pink-400 text-sm mb-5">
+                            No tienes un turno abierto ni ventas registradas en esta fecha.
+                        </p>
                         <button
-                            onClick={() => setDate(new Date(Date.now() - 86400000).toISOString().slice(0, 10))}
-                            className="text-pink-600 font-semibold text-sm hover:underline"
+                            onClick={() => setManualOpenModal(true)}
+                            className="px-6 py-3 bg-gradient-to-r from-emerald-500 to-emerald-600 text-white font-bold text-sm rounded-xl shadow-md hover:shadow-emerald-200 transition inline-flex items-center gap-2"
                         >
-                            ← Ver día anterior
+                            🔓 Abrir Caja e Iniciar Turno Hoy
                         </button>
                     </div>
                 )
@@ -572,13 +715,13 @@ export default function CashClose() {
                     {/* Resumen del Sistema */}
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                         <KpiCard
-                            label="Efectivo en Caja"
+                            label="Efectivo Neto de Ventas"
                             value={formatCurrency(salesData.totalCashIn - salesData.cashExpenses, currency)}
                             icon={Wallet}
                             color="blue"
                         />
                         <KpiCard
-                            label="Ventas Turno"
+                            label="Total Ingresos (Efectivo + QR)"
                             value={formatCurrency(salesData.totalSales, currency)}
                             icon={TrendingUp}
                             color="pink"
@@ -597,20 +740,29 @@ export default function CashClose() {
                             <div className="fashion-card p-5">
                                 <h3 className="font-bold text-pink-900 mb-4 flex items-center gap-2">
                                     <Wallet size={18} className="text-pink-600" />
-                                    Ingresos en Efectivo
+                                    Movimientos en Efectivo ({salesData.transactionCount} op.)
                                 </h3>
                                 <div className="space-y-3">
+                                    <DetailRow
+                                        label="Fondo de inicio de turno"
+                                        amount={startNum}
+                                        icon="🔓"
+                                        bg="blue"
+                                        currency={currency}
+                                    />
                                     <DetailRow
                                         label="Ventas al contado"
                                         amount={salesData.cashSales}
                                         icon="🛍️"
                                         bg="pink"
+                                        currency={currency}
                                     />
                                     <DetailRow
                                         label="Abonos por reservas"
                                         amount={salesData.cashReservations}
                                         icon="🔖"
                                         bg="pink"
+                                        currency={currency}
                                     />
                                     <DetailRow
                                         label="Gastos en efectivo"
@@ -618,14 +770,16 @@ export default function CashClose() {
                                         icon="💸"
                                         bg="red"
                                         negative
+                                        currency={currency}
                                     />
                                     <div className="border-t border-pink-100 pt-3 mt-3">
                                         <DetailRow
-                                            label="Neto en caja"
-                                            amount={salesData.totalCashIn - salesData.cashExpenses}
+                                            label="Efectivo esperado en cajón"
+                                            amount={totalCashExpected}
                                             icon="📦"
                                             bg="blue"
                                             bold
+                                            currency={currency}
                                         />
                                     </div>
                                 </div>
@@ -639,7 +793,7 @@ export default function CashClose() {
                                     </h3>
                                     <div className="space-y-2">
                                         <div className="flex items-center justify-between bg-blue-50 rounded-xl p-4 border border-blue-100">
-                                            <span className="text-sm font-bold text-blue-800">Total No-Efectivo</span>
+                                            <span className="text-sm font-bold text-blue-800">Total No-Efectivo (Banco)</span>
                                             <span className="font-black text-blue-700 text-lg">
                                                 {formatCurrency(salesData.totalQrIn, currency)}
                                             </span>
@@ -686,9 +840,45 @@ export default function CashClose() {
                 </div>
                 <h2 className="text-2xl font-bold mb-2">¡Cierre Completado!</h2>
                 <p className="text-green-100 font-medium">
-                    El arqueo de caja del {new Date(date + 'T12:00:00').toLocaleDateString('es', { day: 'numeric', month: 'long' })} ha sido guardado correctamente.
+                    El arqueo de caja del {new Date(date + 'T12:00:00').toLocaleDateString('es', { day: 'numeric', month: 'long', year: 'numeric' })} ha sido guardado correctamente.
                 </p>
+                {isRetroMode && (
+                    <button
+                        onClick={returnToToday}
+                        className="mt-4 px-5 py-2.5 bg-white text-green-700 font-black text-xs uppercase tracking-wider rounded-xl shadow hover:bg-green-50 transition"
+                    >
+                        ← Volver al Turno de Hoy
+                    </button>
+                )}
             </div>
+
+            {/* Si aún quedan días pendientes, permitir continuar o regularizar todos desde aquí */}
+            {pendingList.length > 0 && (
+                <div className="bg-amber-50 border-2 border-amber-200 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+                    <div>
+                        <p className="text-amber-900 font-bold text-sm">
+                            ⚠️ Aún quedan {pendingList.length} día(s) anterior(es) sin cerrar
+                        </p>
+                        <p className="text-amber-700 text-xs">
+                            Puedes cerrar el siguiente día pendiente o regularizar todos en un solo paso.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                        <button
+                            onClick={() => selectPendingDay(pendingList[0])}
+                            className="px-3.5 py-2 bg-white border border-amber-300 text-amber-900 font-bold text-xs rounded-xl hover:bg-amber-100 transition"
+                        >
+                            Siguiente día ({new Date(pendingList[0] + 'T12:00:00').toLocaleDateString('es', { day: '2-digit', month: 'short' })})
+                        </button>
+                        <button
+                            onClick={() => setConfirmRegularizeModal(true)}
+                            className="px-3.5 py-2 bg-amber-600 text-white font-black text-xs rounded-xl hover:bg-amber-700 transition"
+                        >
+                            ⚡ Regularizar todos ({pendingList.length})
+                        </button>
+                    </div>
+                </div>
+            )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <button
@@ -818,6 +1008,86 @@ export default function CashClose() {
 
             {/* Contenido Dinámico */}
             {step === 1 ? renderClosureForm() : renderStepSuccess()}
+
+            {/* Modal de Confirmación de Regularización Masiva */}
+            {confirmRegularizeModal && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden animate-[fadeIn_0.2s_ease-out]">
+                        <div className="bg-gradient-to-r from-red-600 to-rose-600 p-6 text-white">
+                            <div className="flex items-center gap-3">
+                                <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center shrink-0">
+                                    <CheckCircle size={26} />
+                                </div>
+                                <div>
+                                    <h3 className="text-lg font-black uppercase tracking-tight">
+                                        Regularizar {pendingList.length} día(s) pendientes
+                                    </h3>
+                                    <p className="text-red-100 text-xs mt-0.5">
+                                        Cierre automático y auditado de días anteriores
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="p-6 space-y-4">
+                            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900 space-y-1.5 leading-relaxed">
+                                <p className="font-bold">💡 ¿Por qué aparecen tantos días pendientes?</p>
+                                <p>
+                                    Cuando se cargan datos de prueba o se registran ventas en días pasados sin realizar el cierre de caja al final del turno, el sistema los marca como pendientes de regularización.
+                                </p>
+                            </div>
+                            <div className="bg-gray-50 border border-gray-200 rounded-2xl p-4 text-xs text-gray-700 space-y-2">
+                                <div className="flex justify-between">
+                                    <span className="text-gray-500 font-medium">Días a regularizar:</span>
+                                    <span className="font-black text-gray-900">{pendingList.length} día(s)</span>
+                                </div>
+                                {pendingList.length > 0 && (
+                                    <div className="flex justify-between">
+                                        <span className="text-gray-500 font-medium">Rango de fechas:</span>
+                                        <span className="font-bold text-gray-800">
+                                            {new Date(pendingList[0] + 'T12:00:00').toLocaleDateString('es')} al {new Date(pendingList[pendingList.length - 1] + 'T12:00:00').toLocaleDateString('es')}
+                                        </span>
+                                    </div>
+                                )}
+                                <p className="text-[11px] text-gray-500 pt-1 border-t border-gray-200">
+                                    ✓ Se conservarán intactas todas las ventas, gastos y reportes.<br />
+                                    ✓ Cada día quedará cerrado y cuadrado con sus montos reales en auditoría.
+                                </p>
+                            </div>
+
+                            <div className="flex flex-col sm:flex-row gap-2.5 pt-2">
+                                <button
+                                    onClick={() => setConfirmRegularizeModal(false)}
+                                    disabled={regularizingAll}
+                                    className="flex-1 h-12 rounded-xl border-2 border-gray-200 text-gray-600 font-bold text-sm hover:bg-gray-50 transition"
+                                >
+                                    Cancelar
+                                </button>
+                                <button
+                                    onClick={handleRegularizeAll}
+                                    disabled={regularizingAll}
+                                    className="flex-1 h-12 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-600 text-white font-black text-sm shadow-lg hover:shadow-emerald-200 transition flex items-center justify-center gap-2 disabled:opacity-50"
+                                >
+                                    <CheckCircle size={18} />
+                                    {regularizingAll ? 'Regularizando...' : `Confirmar y Cerrar (${pendingList.length})`}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal para abrir nuevo turno manualmente desde /cash */}
+            {manualOpenModal && (
+                <div className="relative z-50">
+                    <CashOpenModal
+                        onOpen={async (startVal, openNotes) => {
+                            await openCash(startVal, openNotes);
+                            setManualOpenModal(false);
+                            showMsg('success', '✅ Caja abierta e inicio de turno registrado');
+                        }}
+                    />
+                </div>
+            )}
         </div>
     );
 }
@@ -836,13 +1106,23 @@ function ArqueoFisicoCard({
     totalCashExpected, cashDifference, isBalanced, isManipulated,
     currency, handleSave, handleEnableEdit, existing, showEditPill = false,
 }) {
+    const isLocked = !!existingId && !isEditing;
+
+    const handleQuickFillExpected = () => {
+        if (isLocked) return;
+        if (cashStart === '' && !cashStartIsFromOpening) {
+            setCashStart('0');
+        }
+        setCashCount(Math.max(0, totalCashExpected).toFixed(2));
+    };
+
     return (
         <div className="space-y-4">
             <div className="fashion-card p-5 border-2 border-blue-100">
                 <div className="flex items-center justify-between mb-4">
                     <h3 className="font-bold text-blue-900 flex items-center gap-2">
                         <DollarSign size={18} className="text-blue-600" />
-                        Arqueo Físico
+                        Arqueo Físico de Caja
                     </h3>
                     {showEditPill && existingId && !isEditing && (
                         <button
@@ -858,6 +1138,21 @@ function ArqueoFisicoCard({
                     )}
                 </div>
 
+                {/* Resumen siempre visible del efectivo esperado en caja */}
+                <div className="mb-4 p-3.5 rounded-xl bg-blue-50/80 border border-blue-200/80 flex items-center justify-between">
+                    <div>
+                        <p className="text-[10px] font-black uppercase tracking-wider text-blue-600">
+                            Efectivo esperado en cajón
+                        </p>
+                        <p className="text-[11px] text-blue-500">
+                            Fondo inicial + Ventas efectivo − Gastos
+                        </p>
+                    </div>
+                    <span className="text-lg font-black text-blue-900">
+                        {formatCurrency(totalCashExpected, currency)}
+                    </span>
+                </div>
+
                 <div className="space-y-4">
                     <div>
                         <label className="block text-[11px] font-bold text-gray-400 uppercase mb-1">
@@ -871,21 +1166,34 @@ function ArqueoFisicoCard({
                             inputMode="decimal"
                             value={cashStart}
                             onChange={e => setCashStart(e.target.value)}
-                            disabled={(!!existingId && !isEditing) || (!!todayOpening && !existingId)}
+                            disabled={isLocked || (!!todayOpening && !existingId)}
                             className="w-full fashion-input h-10 font-bold"
                             placeholder="0.00"
                         />
                     </div>
                     <div>
-                        <label className="block text-[11px] font-bold text-gray-400 uppercase mb-1">Efectivo en Caja (Contado)</label>
+                        <div className="flex items-center justify-between mb-1">
+                            <label className="block text-[11px] font-bold text-gray-500 uppercase">
+                                Efectivo en Caja (Contado)
+                            </label>
+                            {!isLocked && (
+                                <button
+                                    type="button"
+                                    onClick={handleQuickFillExpected}
+                                    className="text-[11px] font-black text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-lg border border-blue-200 transition"
+                                >
+                                    ⚡ Cuadrar exacto ({formatCurrency(totalCashExpected, currency)})
+                                </button>
+                            )}
+                        </div>
                         <input
                             type="text"
                             inputMode="decimal"
                             value={cashCount}
                             onChange={e => setCashCount(e.target.value)}
-                            disabled={!!existingId && !isEditing}
+                            disabled={isLocked}
                             className="w-full fashion-input h-12 text-lg font-black border-2 focus:border-pink-500"
-                            placeholder="0.00"
+                            placeholder="Ingresa el monto físico contado..."
                         />
                     </div>
                     <div>
@@ -893,7 +1201,7 @@ function ArqueoFisicoCard({
                         <textarea
                             value={notes}
                             onChange={e => setNotes(e.target.value)}
-                            disabled={!!existingId && !isEditing}
+                            disabled={isLocked}
                             className="w-full fashion-input h-16 resize-none text-sm"
                             placeholder="Notas opcionales..."
                         />
@@ -901,17 +1209,21 @@ function ArqueoFisicoCard({
                 </div>
 
                 {/* Diferencia Dinámica */}
-                {(cashStart || cashCount) && (
-                    <div className="mt-4 p-3 rounded-xl bg-gray-50 border border-gray-200">
-                        <div className="flex justify-between items-center mb-1">
-                            <span className="text-xs text-gray-500">Debería haber:</span>
-                            <span className="text-sm font-bold text-gray-700">{formatCurrency(totalCashExpected, currency)}</span>
-                        </div>
+                {cashCount !== '' && (
+                    <div className={`mt-4 p-3.5 rounded-xl border ${
+                        isBalanced
+                            ? 'bg-emerald-50 border-emerald-200'
+                            : cashDifference > 0
+                                ? 'bg-blue-50 border-blue-200'
+                                : 'bg-red-50 border-red-200'
+                    }`}>
                         <div className="flex justify-between items-center">
-                            <span className="text-xs font-bold text-gray-700">Diferencia:</span>
+                            <span className="text-xs font-bold text-gray-700">
+                                {isBalanced ? '✅ Caja Cuadrada:' : cashDifference > 0 ? '➕ Sobrante en Caja:' : '⚠️ Faltante en Caja:'}
+                            </span>
                             <span className={`text-base font-black ${
-                                isBalanced ? 'text-green-600' :
-                                cashDifference > 0 ? 'text-blue-600' : 'text-red-600'
+                                isBalanced ? 'text-emerald-700' :
+                                cashDifference > 0 ? 'text-blue-700' : 'text-red-600'
                             }`}>
                                 {cashDifference >= 0 ? '+' : ''}{formatCurrency(cashDifference, currency)}
                             </span>

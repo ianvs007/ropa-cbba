@@ -103,6 +103,7 @@ export default function Layout({ children }) {
     // ── Aviso al salir con caja sin cerrar (Cerrar Sesión o cerrar la app) ──
     const { today: secureToday } = useSecureDate();
     const pendingCloseDates = usePendingClosureDates(secureToday);
+    const totalPendingBadgeCount = (pendingCloseDates || []).length || pendingClosures.length;
     const exitWarningData = getExitWarning({
         role: user?.role,
         cashOpenToday: !!cashIsOpen,
@@ -206,9 +207,9 @@ export default function Layout({ children }) {
                                     {badge}
                                 </span>
                             )}
-                            {path === '/cash' && hasPendingClosures && (
+                            {path === '/cash' && totalPendingBadgeCount > 0 && (
                                 <span className="ml-auto bg-red-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.6)]">
-                                    {pendingClosures.length}
+                                    {totalPendingBadgeCount}
                                 </span>
                             )}
                             {path === '/sync' && syncAuto.enCurso && (

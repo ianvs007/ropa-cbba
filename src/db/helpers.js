@@ -1,5 +1,6 @@
 import { db } from './schema';
 import { filterClosureMovements } from '../utils/closureMovements';
+import { findPendingClosureDates, planMassRegularization } from '../utils/pendingClosures';
 import { agruparDuplicadosProductos, planificarReasignacionDuplicados } from '../utils/duplicateShortCodes';
 import { planificarAlineacionEtiquetas } from '../utils/alinearCodigosEtiqueta';
 import { CLAVES_SYNC_V2, INTERVALO_AUTO_DEFAULT_MIN, PAGO_VENTA_EN_LINEA } from '../utils/syncV2';
@@ -1098,3 +1099,96 @@ export async function calculateMonthlySummary(monthKey) {
         dailyDetails: mClosures.sort((a,b) => a.date.localeCompare(b.date))
     };
 }
+
+/**
+ * 🛠️ Regulariza en lote todos los días pendientes de cierre (o el subconjunto indicado)
+ * en UNA transacción atómica de Dexie, registrando la auditoría en `cashClosureHistory`
+ * y sincronizando con el disco local.
+ *
+ * @param {Object} [options]
+ * @param {string[]} [options.dates] Fechas YYYY-MM-DD a regularizar (si se omite, detecta todas las anteriores a today)
+ * @param {string} [options.today] Fecha de hoy YYYY-MM-DD
+ * @param {Object} [options.user] Usuario activo que ejecuta la regularización
+ * @returns {Promise<{ count: number, created: number, promoted: number, dates: string[] }>}
+ */
+export async function regularizePendingClosures({ dates = null, today = null, user = null } = {}) {
+    const safeToday = today || getLocalISOString().slice(0, 10);
+    const [sales, rawPayments, reservations, expenses, closures, openings, users] = await Promise.all([
+        db.sales.toArray(),
+        db.reservationPayments.toArray(),
+        db.reservations.toArray(),
+        db.expenses.toArray(),
+        db.table('cashClosures').toArray(),
+        db.table('cashOpenings').toArray(),
+        db.users.toArray(),
+    ]);
+
+    const activeResIds = new Set(
+        reservations.filter(r => r && r.status !== 'cancelled' && r.status !== 'annulled').map(r => r.id)
+    );
+    const payments = rawPayments.filter(p => p.status !== 'annulled' && (activeResIds.size === 0 || activeResIds.has(p.reservationId)));
+
+    const pendingDates = Array.isArray(dates) && dates.length > 0
+        ? dates.filter(d => d && d < safeToday)
+        : findPendingClosureDates({ sales, payments: rawPayments, closures, openings, today: safeToday });
+
+    if (pendingDates.length === 0) {
+        return { count: 0, created: 0, promoted: 0, dates: [] };
+    }
+
+    const nowISO = new Date().toISOString();
+    const plan = planMassRegularization({
+        pendingDates,
+        sales,
+        payments,
+        expenses,
+        closures,
+        openings,
+        users,
+        activeUser: user,
+        nowISO,
+    });
+
+    let created = 0;
+    let promoted = 0;
+
+    await db.transaction('rw', db.cashClosures, db.cashClosureHistory, async () => {
+        for (const item of plan) {
+            if (item.action === 'PROMOVER') {
+                await db.cashClosures.update(item.closureId, item.update);
+                await db.cashClosureHistory.add({
+                    closureId: item.closureId,
+                    date: item.date,
+                    changedBy: item.changedBy,
+                    changedAt: item.changedAt,
+                    changeType: 'retroactive',
+                    changes: item.update,
+                    beforeValues: item.beforeValues,
+                });
+                promoted += 1;
+            } else {
+                const newId = await db.cashClosures.add(item.insert);
+                await db.cashClosureHistory.add({
+                    closureId: newId,
+                    date: item.date,
+                    changedBy: item.changedBy,
+                    changedAt: item.changedAt,
+                    changeType: 'retroactive',
+                    changes: { created: true, ...item.insert },
+                    beforeValues: {},
+                });
+                created += 1;
+            }
+        }
+    });
+
+    await forcePushBrowserToDisk(db).catch(() => {});
+
+    return {
+        count: plan.length,
+        created,
+        promoted,
+        dates: plan.map(p => p.date),
+    };
+}
+
