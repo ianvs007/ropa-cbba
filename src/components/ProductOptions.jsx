@@ -1,7 +1,7 @@
 import React from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
-import { ListTree, Plus, Trash2, Tag, Layers, Settings2, AlertCircle, CheckCircle, Palette, Award } from 'lucide-react';
+import { ListTree, Plus, Trash2, Tag, Layers, Settings2, AlertCircle, CheckCircle, Palette, Award, Store } from 'lucide-react';
 
 export default function ProductOptions() {
     const categories = useLiveQuery(() => db.categories.orderBy('name').toArray(), []);
@@ -9,12 +9,14 @@ export default function ProductOptions() {
     const extraDataDB = useLiveQuery(() => db.productFields.orderBy('name').toArray(), []);
     const brandsDB = useLiveQuery(() => db.brands.orderBy('name').toArray(), []);
     const colorsDB = useLiveQuery(() => db.colors.orderBy('name').toArray(), []);
+    const branchesDB = useLiveQuery(() => (db.branches ? db.branches.orderBy('name').toArray() : []), []);
 
     const [msg, setMsg] = React.useState(null);
 
     React.useEffect(() => {
         // Limpiar duplicados y normalizar a mayúsculas
         const cleanTable = async (table) => {
+            if (!table) return;
             const items = await table.toArray();
             const seen = new Set();
             for (const item of items) {
@@ -38,6 +40,7 @@ export default function ProductOptions() {
         cleanTable(db.productFields);
         cleanTable(db.brands);
         cleanTable(db.colors);
+        cleanTable(db.branches);
         // ── BUG FIX: Ejecutar solo al montar el componente ──
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -52,6 +55,7 @@ export default function ProductOptions() {
     const [newExtra, setNewExtra] = React.useState('');
     const [newBrand, setNewBrand] = React.useState('');
     const [newColor, setNewColor] = React.useState('');
+    const [newBranch, setNewBranch] = React.useState('');
 
     const handleAddCategory = async (e) => {
         e.preventDefault();
@@ -151,6 +155,27 @@ export default function ProductOptions() {
     const handleDeleteColor = async (id) => {
         await db.colors.delete(id);
         showMsg('success', 'Color eliminado');
+    };
+
+    const handleAddBranch = async (e) => {
+        e.preventDefault();
+        const val = newBranch.trim().toUpperCase();
+        if (!val || !db.branches) return;
+        try {
+            const exists = await db.branches.where('name').equals(val).first();
+            if (exists) { showMsg('error', 'La sucursal ya existe'); return; }
+            await db.branches.add({ name: val });
+            setNewBranch('');
+            showMsg('success', 'Sucursal agregada');
+        } catch (err) {
+            showMsg('error', err.message);
+        }
+    };
+
+    const handleDeleteBranch = async (id) => {
+        if (!db.branches) return;
+        await db.branches.delete(id);
+        showMsg('success', 'Sucursal eliminada');
     };
 
     return (
@@ -290,6 +315,33 @@ export default function ProductOptions() {
                             </div>
                         ))}
                         {extraDataDB?.length === 0 && <p className="text-xs text-center text-pink-300 mt-4">Sin datos extras registrados</p>}
+                    </div>
+                </div>
+
+                {/* SUCURSALES (TRASLADOS ENTRADA / SALIDA) */}
+                <div className="fashion-card flex flex-col h-[500px]">
+                    <div className="p-4 border-b border-amber-100 flex items-center gap-2 bg-amber-50/60">
+                        <Store size={18} className="text-amber-600" />
+                        <div>
+                            <h2 className="font-bold text-amber-950 leading-tight">Sucursales</h2>
+                            <p className="text-[10px] text-amber-600 leading-tight mt-0.5">Para traslados y recepción de mercadería</p>
+                        </div>
+                    </div>
+                    <form onSubmit={handleAddBranch} className="p-4 border-b border-amber-50 flex gap-2 shrink-0">
+                        <input value={newBranch} onChange={e => setNewBranch(e.target.value.toUpperCase())}
+                               placeholder="Ej: SUCURSAL CENTRO..." className="fashion-input text-sm flex-1" />
+                        <button type="submit" className="btn-primary px-3 p-2 shrink-0" disabled={!newBranch.trim()}><Plus size={16} /></button>
+                    </form>
+                    <div className="flex-1 overflow-y-auto p-2 scrollbar-thin">
+                        {(branchesDB || []).map(b => (
+                            <div key={b.id} className="flex justify-between items-center px-3 py-2 hover:bg-amber-50/60 rounded-lg group transition-colors">
+                                <span className="text-sm font-semibold text-amber-950">{b.name}</span>
+                                <button onClick={() => handleDeleteBranch(b.id)} className="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all">
+                                    <Trash2 size={14} />
+                                </button>
+                            </div>
+                        ))}
+                        {branchesDB?.length === 0 && <p className="text-xs text-center text-amber-400 mt-4">Sin sucursales registradas</p>}
                     </div>
                 </div>
             </div>

@@ -6,12 +6,14 @@ import {
 } from '../db';
 import {
     RefreshCw, Download, FileSpreadsheet, AlertTriangle, CheckCircle, X, Loader2,
-    Globe, KeyRound, Pencil, Zap, Wrench, Tags, Clock, Power,
+    Globe, KeyRound, Pencil, Zap, Wrench, Tags, Clock, Power, Store, Send,
 } from 'lucide-react';
 import { useNotification } from '../hooks/useNotification';
 import { filasStockParaExportar, codigosDuplicadosEnFilas } from '../utils/syncExcel';
 import { CLAVES_SYNC_V2, INTERVALO_AUTO_DEFAULT_MIN, armarFilasSnapshot, armarFilasEtiquetas } from '../utils/syncV2';
 import { sincronizarV2, estaSincronizando, URL_TIENDA_DEFAULT } from '../utils/syncV2Cliente';
+import { CLAVE_SUCURSAL_LOCAL, SUCURSAL_LOCAL_DEFAULT } from '../utils/cloudBranchTransfers';
+import { guardarSucursalLocal, sincronizarColaTrasladosSalientes } from '../utils/cloudBranchClient';
 
 /**
  * 🔄 Sync — Sincronización con la tienda virtual (protocolo v2 por eventos).
@@ -72,6 +74,62 @@ export default function Sync() {
     const [sincronizando, setSincronizando] = React.useState(false);
     const [progreso, setProgreso] = React.useState(null); // { fase, hechas, total, eventos }
     const [resultado, setResultado] = React.useState(null);
+
+    // ── Sucursales remotas (buzón de traslados en la nube) ──
+    const localBranchSetting = useLiveQuery(() => db.settings.get(CLAVE_SUCURSAL_LOCAL), []);
+    const colaTrasladosPendientes = useLiveQuery(
+        () =>
+            db.branchTransfers
+                ? db.branchTransfers
+                      .where('status')
+                      .equals('pendiente_envio')
+                      .and((r) => r.direction === 'salida')
+                      .count()
+                : Promise.resolve(0),
+        []
+    );
+    const [localBranchInput, setLocalBranchInput] = React.useState('');
+    const [guardandoSucursal, setGuardandoSucursal] = React.useState(false);
+    const [enviandoCola, setEnviandoCola] = React.useState(false);
+
+    React.useEffect(() => {
+        if (localBranchSetting?.value) {
+            setLocalBranchInput(localBranchSetting.value);
+        } else {
+            setLocalBranchInput(SUCURSAL_LOCAL_DEFAULT);
+        }
+    }, [localBranchSetting]);
+
+    const handleGuardarSucursalLocal = async () => {
+        setGuardandoSucursal(true);
+        try {
+            const saved = await guardarSucursalLocal(localBranchInput || SUCURSAL_LOCAL_DEFAULT);
+            setLocalBranchInput(saved);
+            showMsg('success', `Identidad de esta tienda guardada: ${saved}`);
+        } catch (err) {
+            showMsg('error', err.message);
+        } finally {
+            setGuardandoSucursal(false);
+        }
+    };
+
+    const handleEnviarColaTraslados = async () => {
+        setEnviandoCola(true);
+        try {
+            const res = await sincronizarColaTrasladosSalientes();
+            if (res.total === 0) {
+                showMsg('success', 'No hay traslados pendientes por enviar.');
+            } else if (res.fallidos === 0) {
+                showMsg('success', `✓ ${res.enviados} traslado(s) enviado(s) al buzón en la nube.`);
+            } else {
+                showMsg('error', `Se enviaron ${res.enviados}/${res.total}. ${res.errores[0] || ''}`);
+            }
+        } catch (err) {
+            showMsg('error', err.message);
+        } finally {
+            setEnviandoCola(false);
+        }
+    };
 
     const autoOn = String(autoSetting?.value ?? '') === '1';
     const intervaloMin = Number(intervaloSetting?.value) >= 1 ? Number(intervaloSetting.value) : INTERVALO_AUTO_DEFAULT_MIN;
@@ -648,6 +706,66 @@ export default function Sync() {
                         </p>
                     </div>
                 )}
+            </div>
+
+            {/* ══════════ SUCURSALES REMOTAS (BUZÓN EN LA NUBE) ══════════ */}
+            <div className="fashion-card p-6 mb-4 border-2 border-sky-200 relative fade-in">
+                <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-xl bg-sky-600 flex items-center justify-center shrink-0">
+                        <Store size={18} strokeWidth={1.8} className="text-white" />
+                    </div>
+                    <div>
+                        <h2 className="font-black text-sky-950 uppercase tracking-tight">
+                            Sucursales Remotas (Buzón en la Nube)
+                        </h2>
+                        <p className="text-xs text-sky-700 font-medium">
+                            Identifica esta tienda física para enviar y recibir traslados entre ubicaciones usando la nube como buzón seguro
+                        </p>
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-end bg-sky-50/60 border border-sky-100 rounded-xl p-4">
+                    <div>
+                        <label className="text-xs font-bold text-sky-900 block mb-1">
+                            Nombre de esta tienda física
+                        </label>
+                        <div className="flex gap-2">
+                            <input
+                                type="text"
+                                value={localBranchInput}
+                                onChange={(e) => setLocalBranchInput(e.target.value.toUpperCase())}
+                                placeholder="TIENDA PRINCIPAL o SUCURSAL 1"
+                                className="flex-1 px-3 py-2 rounded-xl border border-sky-200 text-sm font-bold uppercase bg-white focus:outline-none focus:border-sky-400"
+                            />
+                            <button
+                                type="button"
+                                onClick={handleGuardarSucursalLocal}
+                                disabled={guardandoSucursal}
+                                className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-black uppercase disabled:opacity-50"
+                            >
+                                {guardandoSucursal ? 'Guardando...' : 'Guardar'}
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-sky-200 rounded-xl px-4 py-2.5">
+                        <div>
+                            <p className="text-[11px] font-bold text-sky-700 uppercase">Cola de envíos salientes</p>
+                            <p className="text-sm font-black text-sky-950">
+                                {colaTrasladosPendientes || 0} pendiente(s) de subir
+                            </p>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={handleEnviarColaTraslados}
+                            disabled={enviandoCola || !configOk}
+                            className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center gap-1.5 disabled:opacity-50"
+                        >
+                            <Send size={14} />
+                            {enviandoCola ? 'Enviando...' : 'Enviar pendientes'}
+                        </button>
+                    </div>
+                </div>
             </div>
 
             {/* ══════════ ALINEACIÓN ETIQUETA ↔ PRODUCTO ══════════ */}

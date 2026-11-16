@@ -3,6 +3,8 @@ import { filterClosureMovements } from '../utils/closureMovements';
 import { agruparDuplicadosProductos, planificarReasignacionDuplicados } from '../utils/duplicateShortCodes';
 import { planificarAlineacionEtiquetas } from '../utils/alinearCodigosEtiqueta';
 import { CLAVES_SYNC_V2, INTERVALO_AUTO_DEFAULT_MIN, PAGO_VENTA_EN_LINEA } from '../utils/syncV2';
+import { planificarIngresoSucursal } from '../utils/branchTransferIn';
+import { forcePushBrowserToDisk, notifyDiskWipe } from './diskSync';
 
 // ==============================================================================
 // 🔧 HELPERS — Funciones utilitarias de base de datos
@@ -585,13 +587,137 @@ export async function discountStock(items) {
     });
 }
 
+/**
+ * Asegura que el nombre de una sucursal exista en el catálogo `db.branches`.
+ * @param {string} rawName
+ * @returns {Promise<string>} Nombre normalizado en mayúsculas
+ */
+export async function ensureBranchExists(rawName) {
+    const val = String(rawName ?? '').trim().toUpperCase();
+    if (!val || !db.branches) return val;
+    const existing = await db.branches.where('name').equals(val).first();
+    if (!existing) {
+        await db.branches.add({ name: val });
+    }
+    return val;
+}
+
+/**
+ * Registra el ingreso de 1 o más unidades traídas desde una sucursal hacia un
+ * producto existente en la tienda principal.
+ *
+ * Contablemente:
+ *  - Es una transferencia interna de mercadería (no toca Caja ni Gastos).
+ *  - Conserva los códigos cortos físicos de la sucursal (`00001`..`99999`) o
+ *    reactiva unidades que habían salido previamente por traslado desde aquí.
+ *  - Marca cada unidad en `db.barcodes` con `isBranchTransfer: true` y `originBranch`.
+ *  - Registra el movimiento en `db.kardex` con `type: 'entrada'`, `subType: 'traslado_entrada'`,
+ *    `originBranch`, `userId`, `registeredBy` y el detalle de `unitCodes`.
+ *  - Actualiza `products.updatedAt` para que la Tienda Virtual sincronice el nuevo stock
+ *    y las etiquetas físicas en el siguiente ciclo.
+ */
+export async function registerBranchTransferInProduct({
+    productId,
+    originBranch,
+    notes = '',
+    rawCodes = [],
+    user = null,
+}) {
+    const sucursal = String(originBranch ?? '').trim().toUpperCase();
+    if (!sucursal) throw new Error('Debes seleccionar la sucursal de origen');
+    if (!Array.isArray(rawCodes) || rawCodes.length === 0) {
+        throw new Error('Debes ingresar al menos 1 código corto de unidad');
+    }
+
+    // Pre-generar EANs únicos antes de abrir la transacción Dexie
+    const generatedEANs = new Set();
+    const eanPool = [];
+    for (let i = 0; i < rawCodes.length; i++) {
+        eanPool.push(await generateUniqueBarcode(generatedEANs));
+    }
+    let eanIdx = 0;
+
+    const tablas = [db.products, db.barcodes, db.kardex];
+    if (db.branches) tablas.push(db.branches);
+
+    return db.transaction('rw', tablas, async () => {
+        const [products, barcodes, targetProduct] = await Promise.all([
+            db.products.toArray(),
+            db.barcodes.toArray(),
+            db.products.get(productId),
+        ]);
+
+        if (!targetProduct) throw new Error('Producto no encontrado');
+
+        const plan = planificarIngresoSucursal({
+            modo: 'producto_existente',
+            originBranch: sucursal,
+            notes,
+            rawCodes,
+            products,
+            barcodes,
+            targetProduct,
+            buildEAN: () => eanPool[eanIdx++] || generateBarcode(),
+        });
+
+        await ensureBranchExists(plan.originBranch);
+
+        const nowLocal = getLocalISOString();
+        const nowISO = new Date().toISOString();
+
+        await db.products.update(productId, {
+            stock: plan.stockNuevo,
+            updatedAt: nowISO,
+        });
+
+        for (const u of plan.unidadesAInsertar) {
+            await db.barcodes.add({
+                productId,
+                barcode: u.barcode,
+                shortCode: u.shortCode,
+                used: false,
+                isBranchTransfer: true,
+                originBranch: plan.originBranch,
+                transferInDate: nowLocal,
+                createdAt: nowLocal,
+            });
+        }
+
+        for (const u of plan.unidadesAReactivar) {
+            await db.barcodes.update(u.id, {
+                used: false,
+                transferStatus: 'retornado',
+                returnDate: nowLocal,
+                isBranchTransfer: true,
+                originBranch: plan.originBranch,
+            });
+        }
+
+        await db.kardex.add({
+            productId,
+            date: nowLocal,
+            type: 'entrada',
+            subType: 'traslado_entrada',
+            originBranch: plan.originBranch,
+            qty: plan.qty,
+            notes: plan.kardexNotes,
+            balanceAfter: plan.stockNuevo,
+            unitCodes: plan.unitCodesKardex,
+            userId: user?.id ?? null,
+            registeredBy: user?.name || user?.username || 'Sistema',
+        });
+
+        return plan;
+    });
+}
+
 /** Exporta toda la base de datos como JSON para backup */
 export async function exportDatabase() {
     const [
         products, kardex, sales, expenseCategories, expenses,
         users, settingsRaw, reservations, reservationPayments,
         categories, productNames, productFields, barcodes, brands, colors,
-        webEventos,
+        branches, branchTransfers, webEventos,
     ] = await Promise.all([
         db.products.toArray(),
         db.kardex.toArray(),
@@ -608,6 +734,8 @@ export async function exportDatabase() {
         db.barcodes.toArray(),
         db.brands.toArray(),
         db.colors.toArray(),
+        db.branches ? db.branches.toArray() : Promise.resolve([]),
+        db.branchTransfers ? db.branchTransfers.toArray() : Promise.resolve([]),
         db.webEventos.toArray(),
     ]);
 
@@ -626,7 +754,7 @@ export async function exportDatabase() {
         data: {
             products: productsWithGlobalId, kardex, sales, expenseCategories, expenses,
             users: safeUsers, settings: settingsRaw, reservations, reservationPayments,
-            categories, productNames, productFields, barcodes, brands, colors,
+            categories, productNames, productFields, barcodes, brands, colors, branches, branchTransfers,
             // Sync v2: los eventos web ya aplicados viajan con el backup para que
             // una restauración no vuelva a descontar las mismas ventas.
             webEventos,
@@ -637,12 +765,18 @@ export async function exportDatabase() {
 /** Importa un backup JSON a la base de datos */
 export async function importDatabase(backupObj) {
     const { data } = backupObj;
-    await db.transaction('rw',
+    const tablas = [
         db.products, db.kardex, db.sales,
         db.expenseCategories, db.expenses, db.settings,
         db.reservations, db.reservationPayments, db.categories,
         db.productNames, db.productFields, db.barcodes,
         db.brands, db.colors, db.webEventos,
+    ];
+    if (db.branches) tablas.push(db.branches);
+    if (db.branchTransfers) tablas.push(db.branchTransfers);
+
+    await db.transaction('rw',
+        tablas,
         async () => {
             if (data.products) {
                 await db.products.clear();
@@ -691,9 +825,12 @@ export async function importDatabase(backupObj) {
             if (data.barcodes) { await db.barcodes.clear(); await db.barcodes.bulkAdd(data.barcodes); }
             if (data.brands) { await db.brands.clear(); await db.brands.bulkAdd(data.brands); }
             if (data.colors) { await db.colors.clear(); await db.colors.bulkAdd(data.colors); }
+            if (data.branches && db.branches) { await db.branches.clear(); await db.branches.bulkAdd(data.branches); }
+            if (data.branchTransfers && db.branchTransfers) { await db.branchTransfers.clear(); await db.branchTransfers.bulkAdd(data.branchTransfers); }
             if (data.webEventos) { await db.webEventos.clear(); await db.webEventos.bulkPut(data.webEventos); }
         }
     );
+    await forcePushBrowserToDisk(db).catch(() => {});
 }
 
 /**
@@ -701,7 +838,7 @@ export async function importDatabase(backupObj) {
  * Borra transacciones pero mantiene productos, usuarios y configuración.
  */
 export async function resetForProduction() {
-    return db.transaction('rw',
+    await db.transaction('rw',
         db.sales, db.expenses, db.kardex,
         db.reservations, db.reservationPayments,
         db.barcodes, db.products,
@@ -721,16 +858,19 @@ export async function resetForProduction() {
             await db.products.toCollection().modify({ stock: 0 });
         }
     );
+    await forcePushBrowserToDisk(db).catch(() => {});
 }
 
 /**
- * Elimina TODA la base de datos IndexedDB y recarga la página.
+ * Elimina TODA la base de datos IndexedDB y en disco, y recarga la página.
  * Al recargar, Dexie re-creará la BD vacía y el seed insertará los datos iniciales.
  */
 export async function deleteEntireDatabase() {
+    await notifyDiskWipe();
     await db.delete();
     window.location.reload();
 }
+
 
 /**
  * Calcula todos los totales para un cierre de caja en una fecha específica.

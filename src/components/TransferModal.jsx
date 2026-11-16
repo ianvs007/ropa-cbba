@@ -1,6 +1,13 @@
 import React from 'react';
-import { X, Search, ArrowRightLeft, Package, AlertTriangle } from 'lucide-react';
-import { db, getLocalISOString } from '../db';
+import { X, Search, ArrowRightLeft, Package, AlertTriangle, Cloud, Download, CheckCircle2 } from 'lucide-react';
+import { db, ensureBranchExists, getLocalISOString } from '../db';
+import BranchSelect from './ui/BranchSelect';
+import { crearPaqueteTraslado } from '../utils/cloudBranchTransfers';
+import {
+    descargarArchivoTraslado,
+    encolarYEnviarTrasladoNube,
+    obtenerSucursalLocal,
+} from '../utils/cloudBranchClient';
 
 /**
  * 🔄 TransferModal — Traslado de una unidad física a otra sucursal
@@ -8,6 +15,8 @@ import { db, getLocalISOString } from '../db';
  * Movimiento contablemente NEUTRO (no es venta ni merma) pero totalmente auditado.
  * La unidad NO se borra de "barcodes": se marca (used + transferStatus) para
  * conservar su shortCode consultable y distinguirla de una venta.
+ * Además genera el paquete de traslado para enviarlo al buzón en la nube
+ * (o descargarlo como archivo `.traslado.json` de respaldo).
  *
  * @prop {Function} onClose   - Cierra la pantalla
  * @prop {Function} showToast - Notificación de éxito tras cerrar (text, type?)
@@ -22,6 +31,7 @@ export default function TransferModal({ onClose, showToast, user }) {
     const [error, setError] = React.useState('');
     const [searching, setSearching] = React.useState(false);
     const [saving, setSaving] = React.useState(false);
+    const [completedInfo, setCompletedInfo] = React.useState(null);
 
     // Al cambiar el código, invalidar la unidad previamente encontrada
     const handleCodeChange = (val) => {
@@ -66,7 +76,7 @@ export default function TransferModal({ onClose, showToast, user }) {
 
     const handleConfirm = async () => {
         if (!unit || !product) return;
-        const destino = sucursalDestino.trim();
+        const destino = sucursalDestino.trim().toUpperCase();
         const mot = motivo.trim();
         if (!destino || !mot) {
             setError('Sucursal destino y motivo son obligatorios');
@@ -76,6 +86,10 @@ export default function TransferModal({ onClose, showToast, user }) {
         setSaving(true);
         setError('');
         try {
+            let freshUnitSnapshot = unit;
+            let freshProductSnapshot = product;
+
+            await ensureBranchExists(destino);
             await db.transaction('rw', db.products, db.kardex, db.barcodes, db.reservations, async () => {
                 // Re-leer unidad y producto DENTRO de la transacción (dato fresco)
                 const freshUnit = await db.barcodes.get(unit.id);
@@ -85,6 +99,9 @@ export default function TransferModal({ onClose, showToast, user }) {
                 const freshProduct = await db.products.get(unit.productId);
                 if (!freshProduct) throw new Error('Producto no encontrado');
                 if (freshProduct.stock < 1) throw new Error('El producto no tiene stock disponible para trasladar');
+
+                freshUnitSnapshot = freshUnit;
+                freshProductSnapshot = freshProduct;
 
                 // Reservas pendientes (mismo criterio que StockAdjustModal en una salida)
                 const newStock = freshProduct.stock - 1;
@@ -105,7 +122,10 @@ export default function TransferModal({ onClose, showToast, user }) {
                 });
 
                 // Baja de stock en 1
-                await db.products.update(freshProduct.id, { stock: newStock });
+                await db.products.update(freshProduct.id, {
+                    stock: newStock,
+                    updatedAt: new Date().toISOString(),
+                });
 
                 // Movimiento de kardex contablemente neutro, auditado
                 await db.kardex.add({
@@ -121,14 +141,94 @@ export default function TransferModal({ onClose, showToast, user }) {
                 });
             });
 
-            showToast('Prenda trasladada con éxito ✓');
-            onClose();
+            const originBranch = await obtenerSucursalLocal();
+            const paquete = crearPaqueteTraslado({
+                originBranch,
+                destinationBranch: destino,
+                notes: mot,
+                user,
+                product: freshProductSnapshot,
+                unit: freshUnitSnapshot,
+            });
+            const syncResult = await encolarYEnviarTrasladoNube(paquete);
+
+            setCompletedInfo({ paquete, syncResult });
+            showToast(
+                syncResult.sentToCloud
+                    ? 'Prenda trasladada y enviada al buzón en la nube ✓'
+                    : 'Prenda trasladada (en cola para subir a la nube) ✓'
+            );
         } catch (err) {
             setError(err.message);
         } finally {
             setSaving(false);
         }
     };
+
+    if (completedInfo) {
+        const { paquete, syncResult } = completedInfo;
+        return (
+            <div className="max-w-2xl mx-auto fade-in pb-20">
+                <div className="fashion-card p-8 border-2 border-emerald-200 bg-emerald-50/40 space-y-6">
+                    <div className="flex items-center gap-4">
+                        <div className="w-12 h-12 rounded-2xl bg-emerald-500 text-white flex items-center justify-center shadow-md">
+                            <CheckCircle2 size={26} />
+                        </div>
+                        <div>
+                            <h2 className="text-xl font-black text-emerald-950 uppercase tracking-tight">
+                                Traslado Registrado
+                            </h2>
+                            <p className="text-xs font-bold text-emerald-700">
+                                {paquete.originBranch} → {paquete.destinationBranch} · Cód {paquete.items[0]?.shortCode}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div
+                        className={`p-4 rounded-2xl border text-xs font-bold flex items-start gap-2.5 ${
+                            syncResult.sentToCloud
+                                ? 'bg-white border-emerald-200 text-emerald-800'
+                                : 'bg-amber-50 border-amber-200 text-amber-900'
+                        }`}
+                    >
+                        <Cloud size={18} className="shrink-0 mt-0.5" />
+                        <div>
+                            {syncResult.sentToCloud ? (
+                                <p>
+                                    Paquete enviado al buzón en la nube. La tienda destino (
+                                    <strong>{paquete.destinationBranch}</strong>) ya puede recibirlo con 1 clic.
+                                </p>
+                            ) : (
+                                <p>
+                                    Guardado en la cola local pendiente de envío ({syncResult.message}).
+                                    Se subirá automáticamente cuando haya conexión, o puedes descargar el archivo
+                                    de respaldo para enviarlo por WhatsApp.
+                                </p>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-3 justify-end pt-2">
+                        <button
+                            type="button"
+                            onClick={() => descargarArchivoTraslado(paquete)}
+                            className="px-4 py-3 rounded-2xl border-2 border-amber-200 bg-white text-amber-800 font-black text-xs uppercase tracking-wider flex items-center gap-2 hover:bg-amber-50 transition-colors"
+                        >
+                            <Download size={16} />
+                            Descargar .traslado.json (Respaldo)
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className="px-6 py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-wider shadow-md transition-colors"
+                        >
+                            Listo
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="max-w-3xl mx-auto fade-in pb-40">
@@ -197,17 +297,13 @@ export default function TransferModal({ onClose, showToast, user }) {
                             </div>
                         </div>
 
-                        <div className="space-y-2">
-                            <label className="text-xs font-black text-pink-900 uppercase tracking-widest">
-                                Sucursal destino
-                            </label>
-                            <input
-                                value={sucursalDestino}
-                                onChange={e => setSucursalDestino(e.target.value.toUpperCase())}
-                                className="fashion-input font-bold text-pink-700 placeholder:text-pink-200"
-                                placeholder="EJ: SUCURSAL CENTRO"
-                            />
-                        </div>
+                        <BranchSelect
+                            label="Sucursal destino"
+                            value={sucursalDestino}
+                            onChange={setSucursalDestino}
+                            placeholder="Seleccionar sucursal destino..."
+                            required
+                        />
 
                         <div className="space-y-2">
                             <label className="text-xs font-black text-pink-900 uppercase tracking-widest">

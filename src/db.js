@@ -36,6 +36,8 @@ export {
     generateBarcodesForProduct,
     fixMissingShortCodes,
     discountStock,
+    ensureBranchExists,
+    registerBranchTransferInProduct,
     exportDatabase,
     importDatabase,
     resetForProduction,
@@ -54,3 +56,13 @@ export {
     automaticcorrectDataIntegrity,
     getAuditStats,
 } from './db/audit';
+
+// Sincronización con disco local (Multi-navegador / Red Local)
+export {
+    getDiskDbStatus,
+    forcePushBrowserToDisk,
+    forcePullDiskToBrowser,
+    triggerDiskBackupNow,
+    subscribeDiskSyncStatus,
+} from './db/diskSync';
+

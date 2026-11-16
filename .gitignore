@@ -2,6 +2,10 @@ node_modules/
 # Exportaciones de diagnóstico con datos reales del negocio — nunca versionar
 diagnostico_caja.json
 
+# Base de datos local en disco y respaldos automáticos — nunca versionar
+datos-pos/
+
 # Estado local del agente (Codewhale)
 .codewhale/
 .aider*
+

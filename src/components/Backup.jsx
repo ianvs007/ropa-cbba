@@ -1,6 +1,16 @@
 import React from 'react';
-import { exportDatabase, importDatabase, resetForProduction, deleteEntireDatabase } from '../db';
-import { Database, Download, Upload, AlertTriangle, CheckCircle, X, Trash2 } from 'lucide-react';
+import {
+    exportDatabase,
+    importDatabase,
+    resetForProduction,
+    deleteEntireDatabase,
+    getDiskDbStatus,
+    forcePushBrowserToDisk,
+    forcePullDiskToBrowser,
+    triggerDiskBackupNow,
+    subscribeDiskSyncStatus,
+} from '../db';
+import { Database, Download, Upload, AlertTriangle, CheckCircle, X, Trash2, HardDrive, RefreshCw, Save } from 'lucide-react';
 
 /**
  * Backup — Copias de seguridad: exportar e importar toda la base de datos
@@ -11,9 +21,54 @@ export default function Backup() {
     const [confirmImport, setConfirmImport] = React.useState(null);
     const [confirmReset, setConfirmReset] = React.useState(false);
     const [confirmWipe, setConfirmWipe] = React.useState(false);
+    const [diskStatus, setDiskStatus] = React.useState(null);
     const fileRef = React.useRef(null);
 
     const showMsg = (type, text) => { setMsg({ type, text }); setTimeout(() => setMsg(null), 5000); };
+
+    React.useEffect(() => {
+        const unsub = subscribeDiskSyncStatus((st) => setDiskStatus(st));
+        getDiskDbStatus();
+        return () => unsub();
+    }, []);
+
+    const handleDiskBackupNow = async () => {
+        setLoading(true);
+        try {
+            const info = await triggerDiskBackupNow();
+            showMsg('success', `✅ Copia guardada en disco: ${info.fileName}`);
+        } catch (err) {
+            showMsg('error', `Error creando respaldo en disco: ${err.message}`);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handlePushToDisk = async () => {
+        setLoading(true);
+        try {
+            await forcePushBrowserToDisk();
+            await getDiskDbStatus();
+            showMsg('success', '✅ Datos de este navegador guardados en el archivo central en disco.');
+        } catch (err) {
+            showMsg('error', `Error al enviar a disco: ${err.message}`);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handlePullFromDisk = async () => {
+        setLoading(true);
+        try {
+            await forcePullDiskToBrowser();
+            await getDiskDbStatus();
+            showMsg('success', '✅ Datos recargados desde el archivo central en disco.');
+        } catch (err) {
+            showMsg('error', `Error al leer desde disco: ${err.message}`);
+        } finally {
+            setLoading(false);
+        }
+    };
 
     // ── EXPORTAR ──
     const handleExport = async () => {
@@ -252,12 +307,87 @@ export default function Backup() {
                 </div>
             )}
 
+            {/* BASE DE DATOS EN DISCO LOCAL (MULTI-NAVEGADOR Y RED LOCAL) */}
+            <div className="fashion-card p-6 mb-4 border-2 border-emerald-200 bg-emerald-50/30">
+                <div className="flex items-start gap-4">
+                    <div className="w-12 h-12 bg-emerald-100 rounded-xl flex items-center justify-center shrink-0">
+                        <HardDrive size={22} className="text-emerald-700" />
+                    </div>
+                    <div className="flex-1">
+                        <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                            <h2 className="font-bold text-pink-900">Base de Datos Central en Disco Local</h2>
+                            <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                                diskStatus?.connected
+                                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                    : 'bg-amber-100 text-amber-800 border border-amber-300'
+                            }`}>
+                                {diskStatus?.connected ? '🟢 Conectada en Disco' : '🟡 Solo Navegador'}
+                            </span>
+                        </div>
+                        <p className="text-sm text-pink-600 mb-3">
+                            Todos los navegadores (Chrome, Edge, perfiles distintos) y otras PCs de la red local
+                            comparten automáticamente el mismo archivo físico en disco en tiempo real.
+                        </p>
+
+                        {diskStatus?.connected && (
+                            <div className="bg-white/90 border border-emerald-200 rounded-xl p-3 mb-4 text-xs text-pink-800 space-y-1.5">
+                                <div>
+                                    <strong>Archivo en disco:</strong>{' '}
+                                    <code className="bg-emerald-50 px-1.5 py-0.5 rounded text-[11px] break-all">
+                                        {diskStatus.dbPath || 'datos-pos/pos-db.json'}
+                                    </code>
+                                </div>
+                                {diskStatus.stats && (
+                                    <div className="flex flex-wrap gap-3 pt-1 text-emerald-900 font-semibold">
+                                        <span>Prendas: {diskStatus.stats.products}</span>
+                                        <span>•</span>
+                                        <span>Unidades: {diskStatus.stats.barcodes}</span>
+                                        <span>•</span>
+                                        <span>Ventas: {diskStatus.stats.sales}</span>
+                                        <span>•</span>
+                                        <span>Respaldos en disco: {diskStatus.backupsCount || 0}</span>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        <div className="flex flex-wrap gap-2">
+                            <button
+                                type="button"
+                                onClick={handleDiskBackupNow}
+                                disabled={loading || !diskStatus?.connected}
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-4 rounded-xl text-xs flex items-center gap-1.5 disabled:opacity-50 transition-all">
+                                <Save size={15} />
+                                Guardar Copia en Disco Ahora
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handlePushToDisk}
+                                disabled={loading || !diskStatus?.connected}
+                                className="bg-white border border-emerald-300 hover:bg-emerald-50 text-emerald-800 font-bold py-2 px-3.5 rounded-xl text-xs flex items-center gap-1.5 disabled:opacity-50 transition-all">
+                                <Upload size={14} />
+                                Enviar este Navegador → Disco
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handlePullFromDisk}
+                                disabled={loading || !diskStatus?.connected}
+                                className="bg-white border border-pink-200 hover:bg-pink-50 text-pink-700 font-bold py-2 px-3.5 rounded-xl text-xs flex items-center gap-1.5 disabled:opacity-50 transition-all">
+                                <RefreshCw size={14} />
+                                Recargar desde Disco
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             {/* EXPORTAR */}
             <div className="fashion-card p-6 mb-4">
                 <div className="flex items-start gap-4">
                     <div className="w-12 h-12 bg-pink-100 rounded-xl flex items-center justify-center shrink-0">
                         <Download size={22} className="text-pink-600" />
                     </div>
+
                     <div className="flex-1">
                         <h2 className="font-bold text-pink-900 mb-1">Exportar Backup</h2>
                         <p className="text-sm text-pink-500 mb-4">

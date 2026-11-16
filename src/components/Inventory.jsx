@@ -1,13 +1,16 @@
 import React from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, generateBarcodesForProduct, getLocalISOString } from '../db';
+import { db, generateBarcodesForProduct, generateUniqueBarcode, generateShortCode, getLocalISOString } from '../db';
 import { jsPDF } from 'jspdf';
-import { Boxes, AlertTriangle, TrendingDown, Package, Plus, X, CheckCircle, Printer, Filter, ArrowRightLeft, Camera, Loader2, ImageOff } from 'lucide-react';
+import { Boxes, AlertTriangle, TrendingDown, Package, Plus, X, CheckCircle, Printer, Filter, ArrowRightLeft, Camera, Loader2, ImageOff, Store } from 'lucide-react';
 import { useNotification } from '../hooks/useNotification';
 import { formatCurrency, drawPDFHeader } from '../utils';
 import { useAvailableStock } from '../hooks/useAvailableStock';
 import { useUser } from '../contexts/UserContext';
 import TransferModal from './TransferModal';
+import StockAdjustModal from './StockAdjustModal';
+import ProductForm, { EMPTY } from './ProductForm';
+import BranchReceiveModal from './BranchReceiveModal';
 import { getEmbedding, cosineSimilarity } from '../utils/garmentClassifier';
 import CameraCapture from './camera/CameraCapture';
 
@@ -92,17 +95,22 @@ export default function Inventory() {
                 productId: unit?.productId ?? unit?.productID ?? unit?.product_id ?? unit?.idProducto,
                 shortCode: getFirstNonEmpty(unit?.shortCode, unit?.codigoCorto),
                 barcode: getFirstNonEmpty(unit?.barcode, unit?.codigoBarras, unit?.ean),
+                originBranch: getFirstNonEmpty(unit?.originBranch),
                 used: rawUsed === true || rawUsed === 1 || rawUsed === '1' || rawUsed === 'true',
             };
         });
     }, [allBarcodes]);
 
-    // Mapa productId → unidades disponibles (no usadas): [{shortCode, barcode}]
+    // Mapa productId → unidades disponibles (no usadas): [{shortCode, barcode, originBranch}]
     const unusedUnitsMap = React.useMemo(() => {
         const m = {};
         normalizedBarcodes.filter(b => b.productId !== undefined && b.productId !== null && !b.used).forEach(b => {
             if (!m[b.productId]) m[b.productId] = [];
-            m[b.productId].push({ shortCode: b.shortCode || '', barcode: b.barcode || '' });
+            m[b.productId].push({
+                shortCode: b.shortCode || '',
+                barcode: b.barcode || '',
+                originBranch: b.originBranch || '',
+            });
         });
         return m;
     }, [normalizedBarcodes]);
@@ -114,6 +122,9 @@ export default function Inventory() {
     const [filter, setFilter] = React.useState('all');
     const [filterCat, setFilterCat] = React.useState('');
     const [showTransfer, setShowTransfer] = React.useState(false);
+    const [showBranchReceive, setShowBranchReceive] = React.useState(false);
+    const [branchAdjTarget, setBranchAdjTarget] = React.useState(null);
+    const [branchNewForm, setBranchNewForm] = React.useState(null);
     const { msg, showMsg } = useNotification();
     const { user } = useUser();
 
@@ -372,8 +383,62 @@ export default function Inventory() {
         );
     }
 
+    // ── Vista: Ingreso de sucursal sobre producto existente ──
+    if (branchAdjTarget) {
+        return (
+            <StockAdjustModal
+                product={branchAdjTarget.product}
+                reservedMap={reservedMap}
+                onClose={() => setBranchAdjTarget(null)}
+                showToast={showToast}
+                initialMode="sucursal"
+                initialCode={branchAdjTarget.code || ''}
+                initialBranch={branchAdjTarget.branch || ''}
+                onSwitchProduct={(otherProd, code, branch) =>
+                    setBranchAdjTarget({ product: otherProd, code, branch })
+                }
+            />
+        );
+    }
+
+    // ── Vista: Alta de producto nuevo desde sucursal ──
+    if (branchNewForm) {
+        return (
+            <ProductForm
+                form={branchNewForm.formData}
+                editing={null}
+                onClose={() => setBranchNewForm(null)}
+                showToast={showToast}
+                categoryOptions={categoriesDB.map(c => c.name)}
+                initialEntryMode="sucursal"
+                initialBranchCode={branchNewForm.code || ''}
+            />
+        );
+    }
+
+    const handleCreateNewFromBranch = async (prefilledCode = '') => {
+        const barcode = await generateUniqueBarcode();
+        const { shortCode, globalId } = await generateShortCode();
+        setShowBranchReceive(false);
+        setBranchNewForm({
+            formData: { ...EMPTY, barcode, shortCode, globalId, stock: '1' },
+            code: prefilledCode,
+        });
+    };
+
     return (
         <div className="max-w-7xl mx-auto fade-in h-full flex flex-col">
+            {showBranchReceive && (
+                <BranchReceiveModal
+                    onClose={() => setShowBranchReceive(false)}
+                    onSelectExistingProduct={(prod, code, branch) => {
+                        setShowBranchReceive(false);
+                        setBranchAdjTarget({ product: prod, code, branch });
+                    }}
+                    onCreateNewFromBranch={handleCreateNewFromBranch}
+                />
+            )}
+
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5 shrink-0">
                 <h1 className="text-2xl font-bold text-pink-900 flex items-center gap-2">
                     <Boxes size={24} strokeWidth={1.8} className="text-pink-600" />
@@ -448,12 +513,17 @@ export default function Inventory() {
                         </button>
                     )}
                 </div>
-                <div className="flex gap-2 items-center">
+                <div className="flex gap-2 items-center flex-wrap">
                     <Filter size={16} className="text-pink-400 shrink-0" />
-                    <select value={filterCat} onChange={e => setFilterCat(e.target.value)} className="fashion-input text-sm">
+                    <select value={filterCat} onChange={e => setFilterCat(e.target.value)} className="fashion-input text-sm flex-1 min-w-[160px]">
                         <option value="">Todas las Categorías</option>
                         {categoriesDB.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
                     </select>
+                    <button onClick={() => setShowBranchReceive(true)}
+                        className="px-4 py-2 rounded-xl text-sm font-semibold border border-emerald-300 bg-emerald-50 text-emerald-800 hover:border-emerald-500 transition-all flex items-center gap-2 shrink-0">
+                        <Store size={16} />
+                        Recibir de sucursal
+                    </button>
                     <button onClick={() => setShowTransfer(true)}
                         className="px-4 py-2 rounded-xl text-sm font-semibold border border-amber-300 bg-amber-50 text-amber-700 hover:border-amber-500 transition-all flex items-center gap-2 shrink-0">
                         <ArrowRightLeft size={16} />
@@ -546,6 +616,7 @@ export default function Inventory() {
                                                 <div className="flex gap-1 flex-wrap mt-0.5 mb-1">
                                                     {p.brand && <span className="text-[10px] font-semibold bg-gray-100 text-gray-600 px-1.5 rounded">{p.brand}</span>}
                                                     {p.extraData && <span className="text-[10px] font-semibold bg-amber-50 text-amber-600 px-1.5 rounded border border-amber-100" title="Datos Extras">{p.extraData}</span>}
+                                                    {p.originBranch && <span className="text-[10px] font-bold bg-amber-100 text-amber-800 px-1.5 rounded border border-amber-200" title={`Registrado desde ${p.originBranch}`}>🏬 {p.originBranch}</span>}
                                                 </div>
                                             </div>
                                         </div>
@@ -565,8 +636,16 @@ export default function Inventory() {
                                         {units.length > 0 ? (
                                             <div className="flex flex-wrap gap-1">
                                                 {units.map((u, idx) => (
-                                                    <span key={`${u.shortCode || 'sin-codigo'}-${u.barcode || idx}`} className="text-[10px] font-bold text-green-700 bg-green-50 px-1.5 py-0.5 rounded border border-green-100">
-                                                        {u.shortCode || '-'}
+                                                    <span
+                                                        key={`${u.shortCode || 'sin-codigo'}-${u.barcode || idx}`}
+                                                        title={u.originBranch ? `Traído de ${u.originBranch}` : 'Stock local'}
+                                                        className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+                                                            u.originBranch
+                                                                ? 'text-amber-800 bg-amber-50 border-amber-200'
+                                                                : 'text-green-700 bg-green-50 border-green-100'
+                                                        }`}
+                                                    >
+                                                        {u.originBranch ? `🏬 ${u.shortCode || '-'}` : (u.shortCode || '-')}
                                                     </span>
                                                 ))}
                                             </div>

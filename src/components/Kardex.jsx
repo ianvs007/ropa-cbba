@@ -1,19 +1,21 @@
 import React from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
-import { History, ArrowDownCircle, ArrowUpCircle, ArrowRightLeft, Filter } from 'lucide-react';
+import { History, ArrowDownCircle, ArrowUpCircle, ArrowRightLeft, Filter, Store } from 'lucide-react';
 
 /**
- * Kardex — Historial de movimientos de inventario
+ * Kardex — Historial de movimientos de inventario (incluyendo recepción y envío entre sucursales)
  */
 export default function Kardex() {
     const [productFilter, setProductFilter] = React.useState('');
     const [typeFilter, setTypeFilter] = React.useState('all');
+    const [branchFilter, setBranchFilter] = React.useState('');
     const [dateFrom, setDateFrom] = React.useState('');
     const [dateTo, setDateTo] = React.useState('');
 
     const products = useLiveQuery(() => db.products.orderBy('name').toArray(), []);
     const allBarcodes = useLiveQuery(() => db.barcodes.toArray(), []) || [];
+    const branchesDB = useLiveQuery(() => (db.branches ? db.branches.orderBy('name').toArray() : []), []) || [];
     const movements = useLiveQuery(async () => {
         let query = db.kardex.orderBy('date').reverse();
         const all = await query.toArray();
@@ -26,20 +28,25 @@ export default function Kardex() {
         return m;
     }, [products]);
 
+    const branchOptions = React.useMemo(() => {
+        const set = new Set((branchesDB || []).map(b => b.name));
+        (movements || []).forEach(m => {
+            if (m.originBranch) set.add(m.originBranch);
+            if (m.transferTo) set.add(m.transferTo);
+        });
+        return Array.from(set).filter(Boolean).sort();
+    }, [branchesDB, movements]);
+
     /**
      * Para movimientos sin unitCodes (datos históricos), buscamos barcodes
      * cuyo productId coincida y cuyo createdAt esté dentro de ±30s del date del kardex.
-     * Esto funciona porque generateBarcodesForProduct siempre se llama
-     * inmediatamente después (o dentro) de la misma operación de kardex.
      */
     const enrichedMovements = React.useMemo(() => {
         if (!movements) return [];
         return movements.map(m => {
-            // Si ya tiene unitCodes, no hay nada que enriquecer
             if (m.unitCodes && m.unitCodes.length > 0) return m;
 
             const kardexMs = new Date(m.date).getTime();
-            // Ventana de ±30 segundos para tolerar diferencias entre escrituras
             const WINDOW_MS = 30000;
 
             const matching = allBarcodes.filter(b => {
@@ -51,20 +58,34 @@ export default function Kardex() {
 
             if (matching.length === 0) return m;
 
-            // Para entradas: todos los barcodes creados en ese rango son los de ese movimiento
-            // Para salidas: mostramos los coincidentes (normalmente ya estarán en used=true)
             return {
                 ...m,
                 unitCodes: matching.map(b => ({ shortCode: b.shortCode || '', barcode: b.barcode || '' })),
-                _enriched: true, // Marca para saber que fue inferido, no guardado
+                _enriched: true,
             };
         });
     }, [movements, allBarcodes]);
 
+    const isEntradaDeSucursal = (m) =>
+        m.subType === 'traslado_entrada' ||
+        !!m.originBranch ||
+        String(m.notes || '').toUpperCase().startsWith('ENTRADA POR TRASLADO') ||
+        String(m.notes || '').toUpperCase().startsWith('INGRESO DESDE ');
+
     const filtered = (enrichedMovements || []).filter(m => {
-        if (productFilter && m.productId !== parseInt(productFilter)) return false;
+        if (productFilter && m.productId !== parseInt(productFilter, 10)) return false;
         const typeNorm = (m.type || '').toLowerCase();
-        if (typeFilter !== 'all' && typeNorm !== typeFilter) return false;
+        if (typeFilter === 'traslado_entrada') {
+            if (!isEntradaDeSucursal(m)) return false;
+        } else if (typeFilter === 'entrada_normal') {
+            if (typeNorm !== 'entrada' || isEntradaDeSucursal(m)) return false;
+        } else if (typeFilter !== 'all' && typeNorm !== typeFilter) {
+            return false;
+        }
+        if (branchFilter) {
+            const branchMov = (m.originBranch || m.transferTo || '').toUpperCase();
+            if (branchMov !== branchFilter.toUpperCase()) return false;
+        }
         if (dateFrom && m.date < dateFrom) return false;
         if (dateTo && m.date.slice(0, 10) > dateTo) return false;
         return true;
@@ -82,7 +103,7 @@ export default function Kardex() {
                 <div className="flex items-center gap-2 mb-3 text-pink-700 font-semibold text-sm">
                     <Filter size={15} /> Filtros
                 </div>
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
                     <select value={productFilter} onChange={e => setProductFilter(e.target.value)}
                         className="fashion-input">
                         <option value="">Todos los productos</option>
@@ -91,9 +112,16 @@ export default function Kardex() {
                     <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)}
                         className="fashion-input">
                         <option value="all">Todos los tipos</option>
-                        <option value="entrada">Entradas</option>
-                        <option value="salida">Salidas</option>
-                        <option value="traslado">Traslados</option>
+                        <option value="entrada">Todas las Entradas</option>
+                        <option value="traslado_entrada">🏬 Entradas desde Sucursal</option>
+                        <option value="entrada_normal">📥 Entradas (Compra/Inicial)</option>
+                        <option value="salida">📤 Salidas (Venta/Baja)</option>
+                        <option value="traslado">🔄 Traslados a Sucursal</option>
+                    </select>
+                    <select value={branchFilter} onChange={e => setBranchFilter(e.target.value)}
+                        className="fashion-input">
+                        <option value="">Todas las sucursales</option>
+                        {branchOptions.map(b => <option key={b} value={b}>{b}</option>)}
                     </select>
                     <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
                         className="fashion-input" placeholder="Desde" />
@@ -110,12 +138,12 @@ export default function Kardex() {
                             <tr className="bg-pink-50 text-pink-700 text-left">
                                 <th className="px-4 py-3 font-semibold">Fecha</th>
                                 <th className="px-4 py-3 font-semibold">Producto</th>
-                                <th className="px-4 py-3 font-semibold">Tipo</th>
+                                <th className="px-4 py-3 font-semibold">Tipo / Origen</th>
                                 <th className="px-4 py-3 font-semibold">Cantidad</th>
                                 <th className="px-4 py-3 font-semibold">Cód. Corto</th>
                                 <th className="px-4 py-3 font-semibold">Cód. Barras</th>
                                 <th className="px-4 py-3 font-semibold">Stock Resultante</th>
-                                <th className="px-4 py-3 font-semibold">Nota</th>
+                                <th className="px-4 py-3 font-semibold">Nota / Auditoría</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-pink-50">
@@ -134,15 +162,40 @@ export default function Kardex() {
                                     <td className="px-4 py-3">
                                         {(() => {
                                             const type = (m.type || 'entrada').toLowerCase();
+                                            const deSucursal = isEntradaDeSucursal(m);
                                             const isEntrada = type === 'entrada';
                                             const isTraslado = type === 'traslado';
+
+                                            if (deSucursal) {
+                                                return (
+                                                    <div className="flex flex-col gap-0.5">
+                                                        <span className="flex items-center gap-1 font-bold text-xs text-emerald-700">
+                                                            <Store size={14} className="text-amber-600" />
+                                                            Ingreso Sucursal
+                                                        </span>
+                                                        {m.originBranch && (
+                                                            <span className="inline-block w-fit text-[10px] font-bold bg-amber-100 text-amber-800 px-1.5 py-0.2 rounded border border-amber-200">
+                                                                🏬 {m.originBranch}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                );
+                                            }
+
                                             const color = isEntrada ? 'text-green-600' : isTraslado ? 'text-amber-600' : 'text-red-600';
                                             const Icon = isEntrada ? ArrowDownCircle : isTraslado ? ArrowRightLeft : ArrowUpCircle;
                                             return (
-                                                <span className={`flex items-center gap-1 font-semibold text-xs ${color}`}>
-                                                    <Icon size={14} />
-                                                    {type.charAt(0).toUpperCase() + type.slice(1)}
-                                                </span>
+                                                <div className="flex flex-col gap-0.5">
+                                                    <span className={`flex items-center gap-1 font-semibold text-xs ${color}`}>
+                                                        <Icon size={14} />
+                                                        {type.charAt(0).toUpperCase() + type.slice(1)}
+                                                    </span>
+                                                    {isTraslado && m.transferTo && (
+                                                        <span className="inline-block w-fit text-[10px] font-bold bg-amber-50 text-amber-700 px-1.5 py-0.2 rounded border border-amber-200">
+                                                            → {m.transferTo}
+                                                        </span>
+                                                    )}
+                                                </div>
                                             );
                                         })()}
                                     </td>
@@ -164,8 +217,15 @@ export default function Kardex() {
                                         {(m.unitCodes || []).length > 0 ? (
                                             <div className="flex flex-col gap-0.5">
                                                 {(m.unitCodes || []).map((u, i) => (
-                                                    <span key={i} className="text-[10px] font-bold text-green-700 bg-green-50 px-1.5 py-0.5 rounded border border-green-100">
-                                                        {u.shortCode || '-'}
+                                                    <span
+                                                        key={i}
+                                                        className={`text-[10px] font-bold px-1.5 py-0.5 rounded border w-fit ${
+                                                            u.originBranch || isEntradaDeSucursal(m)
+                                                                ? 'text-amber-800 bg-amber-50 border-amber-200'
+                                                                : 'text-green-700 bg-green-50 border-green-100'
+                                                        }`}
+                                                    >
+                                                        {(u.originBranch || isEntradaDeSucursal(m)) ? `🏬 ${u.shortCode || '-'}` : (u.shortCode || '-')}
                                                     </span>
                                                 ))}
                                             </div>
@@ -176,7 +236,7 @@ export default function Kardex() {
                                         {(m.unitCodes || []).length > 0 ? (
                                             <div className="flex flex-col gap-0.5">
                                                 {(m.unitCodes || []).map((u, i) => (
-                                                    <span key={i} className="font-mono text-[9px] text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100">
+                                                    <span key={i} className="font-mono text-[9px] text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100 w-fit">
                                                         {u.barcode || '-'}
                                                     </span>
                                                 ))}
@@ -188,7 +248,14 @@ export default function Kardex() {
                                             ? m.balanceAfter 
                                             : '-'}
                                     </td>
-                                    <td className="px-4 py-3 text-pink-500 text-xs">{m.notes || '-'}</td>
+                                    <td className="px-4 py-3 text-pink-600 text-xs">
+                                        <div>{m.notes || '-'}</div>
+                                        {m.registeredBy && (
+                                            <div className="text-[10px] text-pink-400 font-semibold mt-0.5">
+                                                Reg. por: {m.registeredBy}
+                                            </div>
+                                        )}
+                                    </td>
                                 </tr>
                             ))}
                         </tbody>

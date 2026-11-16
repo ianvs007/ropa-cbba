@@ -530,3 +530,60 @@ db.version(25).stores({
     cashOpenings: '++id, date, userId, openedAt',
     webEventos: 'id, tipo, productId, pedidoRef, aplicadoEn',
 });
+
+// ==============================================================================
+// 🏬 ESQUEMA v26 — CATÁLOGO DE SUCURSALES PARA TRASLADOS (ENTRADA / SALIDA)
+// ==============================================================================
+db.version(26).stores({
+    products: '++id, globalId, name, barcode, category, brand, size, color, stock, cost, price, shortCode, active, createdAt, updatedAt, hasEmbedding',
+    kardex: '++id, productId, date, type',
+    sales: '++id, date, total, sellerId, paymentMethod, status, shiftId, pedidoRefWeb, channel, deliveryStatus',
+    expenseCategories: '++id, name',
+    expenses: '++id, date, categoryId, amount, paymentMethod, userId, registeredBy, shiftId',
+    users: '++id, username, role',
+    settings: 'key',
+    reservations: '++id, clientName, clientPhone, productId, status, createdAt, sellerId',
+    reservationPayments: '++id, reservationId, date, status, userId, shiftId',
+    categories: '++id, name',
+    productNames: '++id, name',
+    productFields: '++id, name, type',
+    barcodes: '++id, productId, barcode, shortCode, used, createdAt',
+    brands: '++id, name',
+    colors: '++id, name',
+    branches: '++id, name',
+    cashClosures: '++id, date, userId, closedAt, openingId',
+    cashClosureHistory: '++id, closureId, date, changedBy',
+    securityLogs: '++id, timestamp, eventType, userId',
+    cashOpenings: '++id, date, userId, openedAt',
+    webEventos: 'id, tipo, productId, pedidoRef, aplicadoEn',
+});
+
+// ==============================================================================
+// ☁️ ESQUEMA v27 — BUZÓN Y COLA OFFLINE DE TRASLADOS ENTRE SUCURSALES
+// ==============================================================================
+db.version(27).stores({
+    products: '++id, globalId, name, barcode, category, brand, size, color, stock, cost, price, shortCode, active, createdAt, updatedAt, hasEmbedding',
+    kardex: '++id, productId, date, type',
+    sales: '++id, date, total, sellerId, paymentMethod, status, shiftId, pedidoRefWeb, channel, deliveryStatus',
+    expenseCategories: '++id, name',
+    expenses: '++id, date, categoryId, amount, paymentMethod, userId, registeredBy, shiftId',
+    users: '++id, username, role',
+    settings: 'key',
+    reservations: '++id, clientName, clientPhone, productId, status, createdAt, sellerId',
+    reservationPayments: '++id, reservationId, date, status, userId, shiftId',
+    categories: '++id, name',
+    productNames: '++id, name',
+    productFields: '++id, name, type',
+    barcodes: '++id, productId, barcode, shortCode, used, createdAt',
+    brands: '++id, name',
+    colors: '++id, name',
+    branches: '++id, name',
+    branchTransfers: '++id, transferUid, direction, status, originBranch, destinationBranch, createdAt, syncedAt',
+    cashClosures: '++id, date, userId, closedAt, openingId',
+    cashClosureHistory: '++id, closureId, date, changedBy',
+    securityLogs: '++id, timestamp, eventType, userId',
+    cashOpenings: '++id, date, userId, openedAt',
+    webEventos: 'id, tipo, productId, pedidoRef, aplicadoEn',
+});
+
+

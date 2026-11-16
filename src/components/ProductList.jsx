@@ -1,15 +1,17 @@
 import React from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, generateUniqueBarcode, generateShortCode } from '../db';
-import { Plus, Edit2, Package, XCircle, ImageOff } from 'lucide-react';
+import { Plus, Edit2, Package, XCircle, ImageOff, Store } from 'lucide-react';
 
 import { useAvailableStock } from '../hooks/useAvailableStock';
 import ProductForm, { EMPTY } from './ProductForm';
 import StockAdjustModal from './StockAdjustModal';
+import BranchReceiveModal from './BranchReceiveModal';
 
 /**
  * 🛍️ ProductList — Catálogo de productos
- * Orquesta el listado, el formulario de alta/edición y el modal de ajuste de stock.
+ * Orquesta el listado, el formulario de alta/edición, el modal de ajuste de stock
+ * y el flujo de recepción de mercadería traída desde sucursales.
  */
 export default function ProductList() {
     const products = useLiveQuery(() => db.products.orderBy('name').toArray(), []);
@@ -27,15 +29,31 @@ export default function ProductList() {
         return new Set(pendingReservations.filter(r => r.productShortCode).map(r => r.productShortCode));
     }, [pendingReservations]);
 
-    // Mapa productId → shortCodes de unidades DISPONIBLES (no vendidas, no reservadas)
-    const availableUnitCodesMap = React.useMemo(() => {
+    // Mapa productId → unidades DISPONIBLES (no vendidas, no reservadas) con metadatos de sucursal
+    const availableUnitsMap = React.useMemo(() => {
         const m = {};
-        allBarcodes.filter(b => !b.used && b.shortCode && !reservedUnitCodes.has(b.shortCode)).forEach(b => {
-            if (!m[b.productId]) m[b.productId] = [];
-            m[b.productId].push(b.shortCode);
-        });
+        allBarcodes
+            .filter(b => !b.used && b.shortCode && !reservedUnitCodes.has(b.shortCode))
+            .forEach(b => {
+                if (!m[b.productId]) m[b.productId] = [];
+                m[b.productId].push({
+                    shortCode: b.shortCode,
+                    barcode: b.barcode,
+                    originBranch: b.originBranch || '',
+                    isBranchTransfer: !!b.isBranchTransfer,
+                });
+            });
         return m;
     }, [allBarcodes, reservedUnitCodes]);
+
+    // Mapa productId → shortCodes de unidades DISPONIBLES (para búsqueda rápida)
+    const availableUnitCodesMap = React.useMemo(() => {
+        const m = {};
+        Object.entries(availableUnitsMap).forEach(([pid, list]) => {
+            m[pid] = list.map(u => u.shortCode);
+        });
+        return m;
+    }, [availableUnitsMap]);
 
     // Mapa productId → EAN/barcode de unidades DISPONIBLES (no vendidas, no reservadas)
     const availableUnitEANsMap = React.useMemo(() => {
@@ -66,8 +84,14 @@ export default function ProductList() {
     const [search, setSearch] = React.useState('');
     const [showForm, setShowForm] = React.useState(false);
     const [formData, setFormData] = React.useState({ ...EMPTY });
+    const [formEntryMode, setFormEntryMode] = React.useState('nuevo');
+    const [formBranchCode, setFormBranchCode] = React.useState('');
     const [editing, setEditing] = React.useState(null);
     const [adjProduct, setAdjProduct] = React.useState(null);
+    const [adjInitialMode, setAdjInitialMode] = React.useState('entrada');
+    const [adjInitialCode, setAdjInitialCode] = React.useState('');
+    const [adjInitialBranch, setAdjInitialBranch] = React.useState('');
+    const [showBranchReceiveModal, setShowBranchReceiveModal] = React.useState(false);
     const [showArchived, setShowArchived] = React.useState(false);
     const [archiveTarget, setArchiveTarget] = React.useState(null);
     const [toasts, setToasts] = React.useState([]);
@@ -79,20 +103,31 @@ export default function ProductList() {
         setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3500);
     }, []);
 
-    const openNew = async () => {
+    const openNew = async (mode = 'nuevo', prefilledBranchCode = '') => {
         const barcode = await generateUniqueBarcode();
-        // generateShortCode devuelve la identidad completa del alta: el código
-        // corto del modelo Y el globalId con el que la nube lo va a cruzar.
         const { shortCode, globalId } = await generateShortCode();
-        setFormData({ ...EMPTY, barcode, shortCode, globalId });
+        setFormData({ ...EMPTY, barcode, shortCode, globalId, stock: mode === 'sucursal' ? '1' : '' });
+        setFormEntryMode(mode);
+        setFormBranchCode(prefilledBranchCode);
         setEditing(null);
+        setShowBranchReceiveModal(false);
         setShowForm(true);
     };
 
     const openEdit = (p) => {
         setFormData({ ...p, cost: p.cost || '', price: p.price || '', stock: p.stock || '' });
+        setFormEntryMode('nuevo');
+        setFormBranchCode('');
         setEditing(p.id);
         setShowForm(true);
+    };
+
+    const openStockAdjust = (product, mode = 'entrada', prefilledCode = '', prefilledBranch = '') => {
+        setAdjProduct(product);
+        setAdjInitialMode(mode);
+        setAdjInitialCode(prefilledCode);
+        setAdjInitialBranch(prefilledBranch);
+        setShowBranchReceiveModal(false);
     };
 
     const toggleActive = async (p) => {
@@ -107,11 +142,9 @@ export default function ProductList() {
         if (!q) return true;
         const isCode = /^\d+$/.test(q);
         if (isCode) {
-            // Match exacto: solo unidades disponibles (no vendidas, no reservadas)
             return p.barcode === q || p.shortCode === q ||
                 (availableUnitCodesMap[p.id] || []).some(sc => sc === q);
         }
-        // Texto: match parcial solo en nombre
         return p.name?.toLowerCase().includes(q);
     });
     const displayList = filtered.filter(p => showArchived ? p.active === false : p.active !== false);
@@ -129,11 +162,13 @@ export default function ProductList() {
                 brandOptions={brandOptions}
                 colorOptions={colorOptions}
                 extraDataOptions={extraDataOptions}
+                initialEntryMode={formEntryMode}
+                initialBranchCode={formBranchCode}
             />
         );
     }
 
-    // ── Vista: Ajuste de Stock ──
+    // ── Vista: Ajuste de Stock / Ingreso de Sucursal ──
     if (adjProduct) {
         return (
             <StockAdjustModal
@@ -141,12 +176,29 @@ export default function ProductList() {
                 reservedMap={reservedMap}
                 onClose={() => setAdjProduct(null)}
                 showToast={showToast}
+                initialMode={adjInitialMode}
+                initialCode={adjInitialCode}
+                initialBranch={adjInitialBranch}
+                onSwitchProduct={(otherProd, code, branch) => {
+                    openStockAdjust(otherProd, 'sucursal', code, branch);
+                }}
             />
         );
     }
 
     return (
         <div className="max-w-7xl mx-auto fade-in relative">
+            {/* Modal asistente Recibir de Sucursal */}
+            {showBranchReceiveModal && (
+                <BranchReceiveModal
+                    onClose={() => setShowBranchReceiveModal(false)}
+                    onSelectExistingProduct={(prod, code, branch) =>
+                        openStockAdjust(prod, 'sucursal', code, branch)
+                    }
+                    onCreateNewFromBranch={(code) => openNew('sucursal', code)}
+                />
+            )}
+
             {/* Modal confirmación archivar */}
             {archiveTarget && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
@@ -185,16 +237,22 @@ export default function ProductList() {
             </div>
 
             {/* Cabecera */}
-            <div className="flex justify-between items-center mb-5">
+            <div className="flex flex-wrap justify-between items-center gap-3 mb-5">
                 <h1 className="text-2xl font-bold text-pink-900 flex items-center gap-2">
                     <Package size={24} /> Catálogo
                 </h1>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                     <button onClick={() => setShowArchived(!showArchived)}
                         className="px-4 py-2 border rounded-xl font-bold text-pink-400">
                         {showArchived ? 'Ver Activos' : 'Ver Archivados'}
                     </button>
-                    <button onClick={openNew} className="btn-primary flex items-center gap-2">
+                    <button
+                        onClick={() => setShowBranchReceiveModal(true)}
+                        className="px-4 py-2 rounded-xl font-bold text-amber-800 bg-amber-50 border-2 border-amber-200 hover:bg-amber-100 hover:border-amber-300 transition flex items-center gap-2"
+                    >
+                        <Store size={17} className="text-amber-600" /> Recibir de Sucursal
+                    </button>
+                    <button onClick={() => openNew('nuevo', '')} className="btn-primary flex items-center gap-2">
                         <Plus size={18} /> Nuevo
                     </button>
                 </div>
@@ -242,16 +300,32 @@ export default function ProductList() {
                                                 {p.color && <span className="text-[10px] font-semibold bg-blue-50 text-blue-600 px-1.5 rounded border border-blue-100">{p.color}</span>}
                                                 {p.size && <span className="text-[10px] font-semibold bg-purple-50 text-purple-600 px-1.5 rounded border border-purple-100">{p.size}</span>}
                                                 {p.extraData && <span className="text-[10px] font-semibold bg-amber-50 text-amber-600 px-1.5 rounded border border-amber-100">{p.extraData}</span>}
+                                                {p.originBranch && (
+                                                    <span
+                                                        className="text-[10px] font-bold bg-amber-100 text-amber-800 px-1.5 rounded border border-amber-200 flex items-center gap-0.5"
+                                                        title={`Registrado desde ${p.originBranch}`}
+                                                    >
+                                                        🏬 {p.originBranch}
+                                                    </span>
+                                                )}
                                             </div>
                                         </div>
                                     </div>
                                 </td>
                                 <td className="px-4 py-3 text-center">
-                                    {(availableUnitCodesMap[p.id] || []).length > 0 ? (
+                                    {(availableUnitsMap[p.id] || []).length > 0 ? (
                                         <div className="flex flex-wrap justify-center gap-1">
-                                            {(availableUnitCodesMap[p.id] || []).map(sc => (
-                                                <span key={sc} className="font-bold text-green-600 text-xs bg-green-50 px-1.5 rounded border border-green-100">
-                                                    {sc}
+                                            {(availableUnitsMap[p.id] || []).map(u => (
+                                                <span
+                                                    key={u.shortCode}
+                                                    title={u.originBranch ? `Traído de ${u.originBranch}` : 'Stock local'}
+                                                    className={`font-bold text-xs px-1.5 rounded border ${
+                                                        u.originBranch
+                                                            ? 'text-amber-800 bg-amber-50 border-amber-200'
+                                                            : 'text-green-600 bg-green-50 border-green-100'
+                                                    }`}
+                                                >
+                                                    {u.originBranch ? `🏬 ${u.shortCode}` : u.shortCode}
                                                 </span>
                                             ))}
                                         </div>
@@ -283,8 +357,21 @@ export default function ProductList() {
                                 <td className="px-4 py-3 text-center font-bold text-pink-800">{currency}{p.price?.toFixed(2)}</td>
                                 <td className="px-4 py-3 text-center">
                                     <div className="flex justify-center gap-2">
-                                        <button onClick={() => setAdjProduct(p)} className="text-green-500" title="Ajuste de Stock" aria-label="Ajuste de stock">
+                                        <button
+                                            onClick={() => openStockAdjust(p, 'entrada')}
+                                            className="text-green-500 hover:text-green-700"
+                                            title="Ajuste de Stock"
+                                            aria-label="Ajuste de stock"
+                                        >
                                             <Plus size={16} />
+                                        </button>
+                                        <button
+                                            onClick={() => openStockAdjust(p, 'sucursal')}
+                                            className="text-amber-600 hover:text-amber-800"
+                                            title="Recibir unidad(es) desde Sucursal"
+                                            aria-label="Recibir de sucursal"
+                                        >
+                                            <Store size={16} />
                                         </button>
                                         <button onClick={() => openEdit(p)} className="text-pink-500" title="Editar" aria-label="Editar producto">
                                             <Edit2 size={16} />

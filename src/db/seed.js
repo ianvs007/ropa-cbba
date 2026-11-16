@@ -1,5 +1,6 @@
 import { db } from './schema';
 import { hashPassword } from '../utils/crypto';
+import { initDiskSync } from './diskSync';
 
 /**
  * Migración de contraseñas legacy a hash PBKDF2.
@@ -79,6 +80,17 @@ db.on('ready', async () => {
         await db.productNames.bulkAdd(defaultNames.map(name => ({ name })));
     }
 
+    // ── Sucursales por defecto para traslados de entrada/salida
+    if (db.branches) {
+        const branchesCount = await db.branches.count();
+        if (branchesCount === 0) {
+            await db.branches.bulkAdd([
+                { name: 'SUCURSAL 1' },
+                { name: 'SUCURSAL 2' },
+            ]);
+        }
+    }
+
     // ── MIGRACIÓN: Asignar shortCode a productos antiguos que no tengan
     const productsToMigrate = await db.products.filter(p => !p.shortCode).toArray();
     if (productsToMigrate.length > 0) {
@@ -95,5 +107,9 @@ db.on('ready', async () => {
     }
 });
 
-// Ejecutar migración de contraseñas después de que la BD esté abierta
-db.open().then(() => migratePasswordsToHash());
+// Ejecutar migración de contraseñas y sincronización con disco después de que la BD esté abierta
+db.open()
+    .then(() => migratePasswordsToHash())
+    .then(() => initDiskSync(db))
+    .then(() => migratePasswordsToHash());
+
