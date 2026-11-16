@@ -1,12 +1,14 @@
 import React from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, generateUniqueBarcode, generateShortCode } from '../db';
-import { Plus, Edit2, Package, XCircle, ImageOff, Store } from 'lucide-react';
+import { Plus, Edit2, Package, XCircle, ImageOff, Store, ArrowRightLeft } from 'lucide-react';
 
 import { useAvailableStock } from '../hooks/useAvailableStock';
+import { useUser } from '../contexts/UserContext';
 import ProductForm, { EMPTY } from './ProductForm';
 import StockAdjustModal from './StockAdjustModal';
 import BranchReceiveModal from './BranchReceiveModal';
+import TransferModal from './TransferModal';
 
 /**
  * 🛍️ ProductList — Catálogo de productos
@@ -92,9 +94,11 @@ export default function ProductList() {
     const [adjInitialCode, setAdjInitialCode] = React.useState('');
     const [adjInitialBranch, setAdjInitialBranch] = React.useState('');
     const [showBranchReceiveModal, setShowBranchReceiveModal] = React.useState(false);
+    const [showTransferModal, setShowTransferModal] = React.useState(false);
     const [showArchived, setShowArchived] = React.useState(false);
     const [archiveTarget, setArchiveTarget] = React.useState(null);
     const [toasts, setToasts] = React.useState([]);
+    const { user } = useUser() || {};
 
     // ── Toast system ──
     const showToast = React.useCallback((text, type = 'success') => {
@@ -199,6 +203,16 @@ export default function ProductList() {
                 />
             )}
 
+            {/* Modal Trasladar a Sucursal */}
+            {showTransferModal && (
+                <TransferModal
+                    user={user}
+                    showToast={(t) => showToast(t, 'success')}
+                    onClose={() => setShowTransferModal(false)}
+                />
+            )}
+
+
             {/* Modal confirmación archivar */}
             {archiveTarget && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
@@ -248,10 +262,17 @@ export default function ProductList() {
                     </button>
                     <button
                         onClick={() => setShowBranchReceiveModal(true)}
+                        className="px-4 py-2 rounded-xl font-bold text-emerald-800 bg-emerald-50 border-2 border-emerald-200 hover:bg-emerald-100 hover:border-emerald-300 transition flex items-center gap-2"
+                    >
+                        <Store size={17} className="text-emerald-600" /> Recibir de Sucursal
+                    </button>
+                    <button
+                        onClick={() => setShowTransferModal(true)}
                         className="px-4 py-2 rounded-xl font-bold text-amber-800 bg-amber-50 border-2 border-amber-200 hover:bg-amber-100 hover:border-amber-300 transition flex items-center gap-2"
                     >
-                        <Store size={17} className="text-amber-600" /> Recibir de Sucursal
+                        <ArrowRightLeft size={17} className="text-amber-600" /> Trasladar a Sucursal
                     </button>
+
                     <button onClick={() => openNew('nuevo', '')} className="btn-primary flex items-center gap-2">
                         <Plus size={18} /> Nuevo
                     </button>

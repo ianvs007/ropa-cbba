@@ -1,5 +1,5 @@
 import React from 'react';
-import { ShoppingCart } from 'lucide-react';
+import { ShoppingCart, Store, ArrowRightLeft } from 'lucide-react';
 import { db, syncClosureIfDateExists, getLocalISOString } from '../db';
 import { printTicketGlobal, formatCurrency } from '../utils';
 import { useAvailableStock } from '../hooks/useAvailableStock';
@@ -10,6 +10,9 @@ import { useUser } from '../contexts/UserContext';
 import ProductSearch from './pos/ProductSearch';
 import CartPanel from './pos/CartPanel';
 import PaymentPanel from './pos/PaymentPanel';
+import TransferModal from './TransferModal';
+import BranchReceiveModal from './BranchReceiveModal';
+import StockAdjustModal from './StockAdjustModal';
 
 /**
  * 🛒 POS — Punto de Venta
@@ -23,6 +26,10 @@ export default function POS() {
     const [success, setSuccess] = React.useState(false);
     const [error, setError] = React.useState('');
     const [scanFlash, setScanFlash] = React.useState(false);
+    const [showTransfer, setShowTransfer] = React.useState(false);
+    const [showBranchReceive, setShowBranchReceive] = React.useState(false);
+    const [branchAdjTarget, setBranchAdjTarget] = React.useState(null);
+    const [branchToast, setBranchToast] = React.useState('');
 
     const { shiftId } = useCashRegister();
     const settings = useLiveQuery(() => db.settings.toArray(), []);
@@ -260,12 +267,87 @@ export default function POS() {
     const originalTotal = cart.reduce((s, i) => s + i.originalPrice * i.qty, 0);
     const totalDiscount = Math.round((originalTotal - total) * 100) / 100;
 
+    // ── Vista: Traslado a sucursal ──
+    if (showTransfer) {
+        return (
+            <TransferModal
+                user={user}
+                showToast={(text) => {
+                    setBranchToast(text);
+                    setTimeout(() => setBranchToast(''), 4000);
+                }}
+                onClose={() => setShowTransfer(false)}
+            />
+        );
+    }
+
+    // ── Vista: Ingreso de sucursal sobre producto existente ──
+    if (branchAdjTarget) {
+        return (
+            <StockAdjustModal
+                product={branchAdjTarget.product}
+                reservedMap={reservedMap}
+                onClose={() => setBranchAdjTarget(null)}
+                showToast={(text) => {
+                    setBranchToast(text);
+                    setTimeout(() => setBranchToast(''), 4000);
+                }}
+                initialMode="sucursal"
+                initialCode={branchAdjTarget.code || ''}
+                initialBranch={branchAdjTarget.branch || ''}
+            />
+        );
+    }
+
     return (
         <div className="max-w-7xl mx-auto fade-in">
-            <h1 className="text-2xl font-bold text-pink-900 mb-4 flex items-center gap-2">
-                <ShoppingCart size={24} strokeWidth={1.8} className="text-pink-600" />
-                Punto de Venta
-            </h1>
+            {branchToast && (
+                <div className="mb-4 px-4 py-3 rounded-2xl bg-emerald-600 text-white font-bold text-sm shadow-lg flex items-center justify-between">
+                    <span>{branchToast}</span>
+                    <button onClick={() => setBranchToast('')} className="text-white/80 hover:text-white font-bold ml-2">✕</button>
+                </div>
+            )}
+
+            {/* Modal asistente Recibir de Sucursal */}
+            {showBranchReceive && (
+                <BranchReceiveModal
+                    onClose={() => setShowBranchReceive(false)}
+                    onSelectExistingProduct={(prod, code, branch) => {
+                        setShowBranchReceive(false);
+                        setBranchAdjTarget({ product: prod, code, branch });
+                    }}
+                    onCreateNewFromBranch={(code) => {
+                        setShowBranchReceive(false);
+                        setError(`Para prendas nuevas recibidas de sucursal (cód ${code}), usa el menú Catálogo → Recibir de Sucursal`);
+                    }}
+                />
+            )}
+
+            <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
+                <h1 className="text-2xl font-bold text-pink-900 flex items-center gap-2">
+                    <ShoppingCart size={24} strokeWidth={1.8} className="text-pink-600" />
+                    Punto de Venta
+                </h1>
+                <div className="flex flex-wrap gap-2">
+                    <button
+                        type="button"
+                        onClick={() => setShowBranchReceive(true)}
+                        className="px-3.5 py-2 rounded-xl text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-300 hover:bg-emerald-100 transition flex items-center gap-1.5 shadow-sm"
+                        title="Recibir prendas enviadas desde otra sucursal"
+                    >
+                        <Store size={15} className="text-emerald-600" /> Recibir de Sucursal
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setShowTransfer(true)}
+                        className="px-3.5 py-2 rounded-xl text-xs font-bold text-amber-800 bg-amber-50 border border-amber-300 hover:bg-amber-100 transition flex items-center gap-1.5 shadow-sm"
+                        title="Enviar prenda física hacia otra sucursal"
+                    >
+                        <ArrowRightLeft size={15} className="text-amber-600" /> Trasladar a Sucursal
+                    </button>
+                </div>
+            </div>
+
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
                 {/* Buscador + Carrito */}
