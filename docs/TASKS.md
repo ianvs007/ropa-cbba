@@ -21,13 +21,13 @@
 - [ ] Dividir `src/components/CashClose.jsx` (982 líneas).
 
 ### 2. Funcionalidad (Prioridad Media)
-- [ ] Resolver la dependencia `xlsx`: está instalada pero no se importa en ningún archivo. Implementar la exportación a Excel o eliminar la dependencia.
+- [x] Resolver la dependencia `xlsx`: se usa solo para ESCRIBIR Excel en `Sync.jsx` (exportación de stock); el aviso de seguridad (lectura) está mitigado y protegido por test. Ver `docs/SEGURIDAD.md` §5 (22/11/2026).
 - [ ] Eliminar o reintegrar `src/components/DataIntegrity.jsx`: su ruta (`/data-integrity`) siempre redirige; la lógica vive en `CashClose.jsx`.
 - [ ] Añadir tests de componentes React (actualmente solo hay tests de lógica pura).
 
 ### 3. Seguridad (Prioridad Media)
-- [ ] Proteger el borrado/reset de datos con contraseña de admin (hoy solo tiene doble confirmación en `Backup.jsx`).
-- [ ] Cambiar credenciales por defecto débiles del seed (`admin123` / `cajera123`).
+- [x] Proteger el borrado/reset de datos con contraseña de admin en `Backup.jsx` (22/11/2026).
+- [x] Cambiar credenciales por defecto débiles del seed: cambio obligatorio en el primer login (22/11/2026).
 - [ ] Revisar validaciones de entrada en formularios para prevenir XSS (React escapa por defecto; `Barcode.jsx` ya sanitiza con `escapeHtml` — extender ese criterio donde se genere HTML manual).
 
 ### 4. Mantenimiento (Prioridad Baja)

@@ -23,6 +23,9 @@ el 22/08/2026 la identidad de cruce con la nube es el `globalId` (UUID estable).
 - **dist/ está versionado**: se commitea SOLO en commits de build para despliegue
  (`build: regenerar dist ...`). Los builds de verificación se descartan con
  `git checkout -- dist; git clean -fd dist`.
+- **Producción sirve `dist/`** (desde el 22/11/2026): los scripts de inicio usan
+  `npm run start` (`vite preview`), NO `npm run dev`. Un cambio de código solo llega a
+  la tienda si se regeneró `dist/` en un commit `build:`. Ver `docs/SEGURIDAD.md`.
 - **Despliegue**: Alain NO quiere zips del sistema completo (10/09/2026); el
  código se distribuye desde GitHub (`main` con `dist/` versionado). El zip v8
  armado ese día (`ropa-cbba-v8-sync-eventos-20260910.zip`) queda solo como
@@ -31,8 +34,9 @@ el 22/08/2026 la identidad de cruce con la nube es el `globalId` (UUID estable).
  `iniciar-servicio-silencioso.bat`).
 - **Tests**: `npx vitest run` (entorno node, funciones puras — la lógica testeable
   se extrae a `src/utils/` o se exporta del hook). Toda la suite en verde +
-  `npm run build` antes de commitear. **218 tests** versionados al 2026-09-07
-  (243 en el working tree: 25 más del planificador de alineación, sin versionar).
+  `npm run build` antes de commitear. **356 tests** en 28 archivos al 22/11/2026
+  (incluye tests de integración del middleware `/__local_db` sobre un servidor
+  HTTP real en loopback).
 - **ESLint**: hay falsos positivos preexistentes (`Icon` en Layout/CashClose,
   vars sin usar); no arreglarlos de pasada — verificar con stash que no se
   agregan problemas nuevos.
@@ -604,3 +608,43 @@ autoridad; el botón "Vaciar nube" era TEMPORAL y se RETIRÓ el 11/09 15:40
  central, usar **intervalo 15–30 min** (no el default de 10) para dejar margen
  al catálogo público; el default sigue en 10 en `INTERVALO_AUTO_DEFAULT_MIN`.
  Alternativa descartada por ahora (decisión de Alain): Workers Paid USD 5/mes.
+
+### 🔐 Endurecimiento de seguridad (22/11/2026, rama `cursor/seguridad-local-db-auth-7287`)
+
+Origen: informe de estado del 22/11 (secciones 6-7). Detalle operativo y de configuración
+en **`docs/SEGURIDAD.md`**. Decisiones vigentes:
+
+26. **`/__local_db/*` exige autenticación** (`utils/localDiskDbAuth.js`, plugin
+    `server/localDiskDbPlugin.js`, cliente `db/diskSync.js`): la propia máquina
+    (socket loopback + `Host` local) opera SIN token (la central no cambia su flujo);
+    cualquier otra PC de la red necesita el token (`X-POS-Token`, Bearer o `?token=` para
+    el SSE); `Origin` distinto del `Host` → 403 (anti CSRF); falla cerrado si no hay token.
+    El token se autogenera en `datos-pos/.local-db-token` (o `POS_LOCAL_DB_TOKEN`); la
+    central lo muestra en Copias de Seguridad y las otras PCs lo pegan ahí. `POS_HOST=
+    127.0.0.1` limita el servidor a la propia PC; `POS_LOCAL_DB_TRUST_LOOPBACK=0` exige
+    token también en la central. Por defecto el servidor sigue escuchando en la red local
+    (otras PCs comparten la BD en disco) — el token es lo que la protege.
+27. **Producción con `vite preview`** (`npm run start`): los 3 scripts de inicio dejaron de
+    usar `npm run dev`; si falta `dist/index.html` lo generan con `npm run build`.
+28. **Credenciales iniciales**: `admin123`/`cajera123` se siembran hasheadas con
+    `mustChangePassword: true` y Login fuerza el cambio (`ForcePasswordChange`,
+    `utils/passwordPolicy.js`: mín. 8, no de fábrica, distinta de la actual y del usuario).
+    También se fuerza si una BD vieja entra con una contraseña de fábrica. El soporte de
+    contraseñas legacy en texto plano se ELIMINÓ de `verifyPassword`; al abrir la BD,
+    `migrarContrasenasLegacy` las pasa a hash y Login espera `inicializacionUsuarios`.
+    Los usuarios iniciales se crean después de `db.open()` (el hash es asíncrono), ya no en
+    `db.on('ready')`.
+29. **Borrado total / limpiar para producción / restaurar backup** piden la contraseña del
+    admin en sesión (`utils/adminAuth.js` → `confirmarContrasenaAdmin`, verificada contra
+    el registro actual de `db.users`).
+30. **Dependencias**: `npm audit` de 23 a 1 vulnerabilidad (jspdf 4.2.1, react-router 7.18.6,
+    vite 7.3.8, vitest 4.1.12...). Queda `xlsx` 0.18.5 (sin parche en npm): su riesgo es al
+    LEER libros y el POS solo ESCRIBE (`Sync.jsx`); `xlsxSoloEscritura.test.js` falla si
+    alguien agrega `XLSX.read`. Nota: `npm audit fix` con npm 10.9 falla con "Cannot read
+    properties of null (reading 'edgesOut')"; se resolvió con `npx npm@11 audit fix`.
+⚠️ Cobertura: Login/ForcePasswordChange/Backup son wiring de React sin test automático;
+se validaron a mano en navegador real (Chrome headless contra `vite preview`): login
+forzado, borrado con contraseña incorrecta/correcta y conexión de una PC remota con token.
+La lógica (acceso, token, política, migración, re-autenticación admin) sí tiene tests.
+⚠️ Pendiente operativo: ninguna de estas medidas está desplegada en la central; antes de
+actualizar, exportar un Backup completo y seguir las notas de migración del PR.
