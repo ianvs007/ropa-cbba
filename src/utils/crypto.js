@@ -43,17 +43,41 @@ export async function hashPassword(password) {
     return `${bufferToHex(salt.buffer)}:${bufferToHex(derived)}`;
 }
 
+const FORMATO_HASH = /^[0-9a-f]{32}:[0-9a-f]{64}$/i;
+
+/** ¿El valor guardado tiene el formato `salt:hash` generado por hashPassword? */
+export function esHashValido(valor) {
+    return typeof valor === 'string' && FORMATO_HASH.test(valor);
+}
+
 /**
  * Verifica una contraseña contra un hash "salt:hash".
- * También acepta contraseñas legacy en texto plano (sin ':').
+ * Ya NO acepta contraseñas en texto plano: un valor que no sea un hash válido
+ * (legacy sin migrar, vacío o corrupto) siempre falla. Las contraseñas legacy se
+ * convierten a hash al abrir la BD con `migrarContrasenasLegacy`.
  */
 export async function verifyPassword(password, storedHash) {
-    // Legacy: si no tiene formato salt:hash, comparar directo
-    if (!storedHash.includes(':')) {
-        return password === storedHash;
+    if (typeof password !== 'string' || !esHashValido(storedHash)) {
+        return false;
     }
     const [saltHex, hashHex] = storedHash.split(':');
     const salt = hexToBuffer(saltHex);
     const derived = await deriveKey(password, salt);
-    return bufferToHex(derived) === hashHex;
+    return bufferToHex(derived) === hashHex.toLowerCase();
+}
+
+/**
+ * Calcula las actualizaciones necesarias para pasar a hash las contraseñas que aún están
+ * en texto plano (usuarios creados por versiones antiguas). No toca usuarios que ya tienen
+ * hash válido ni los que no tienen contraseña.
+ * @returns {Promise<Array<{ id: number|string, password: string }>>}
+ */
+export async function migrarContrasenasLegacy(users, hash = hashPassword) {
+    const cambios = [];
+    for (const u of users || []) {
+        if (typeof u?.password === 'string' && u.password !== '' && !esHashValido(u.password)) {
+            cambios.push({ id: u.id, password: await hash(u.password) });
+        }
+    }
+    return cambios;
 }
