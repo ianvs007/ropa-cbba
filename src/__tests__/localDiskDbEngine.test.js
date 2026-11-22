@@ -160,6 +160,9 @@ describe('Middleware HTTP de Base de Datos en Disco Local', () => {
             const req = new EventEmitter();
             req.method = method;
             req.url = url;
+            // La propia máquina central: loopback + Host local (no requiere token)
+            req.headers = { host: 'localhost:3001' };
+            req.socket = { remoteAddress: '127.0.0.1' };
 
             const headers = {};
             const res = {

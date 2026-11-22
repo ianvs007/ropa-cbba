@@ -65,5 +65,8 @@ export {
     forcePullDiskToBrowser,
     triggerDiskBackupNow,
     subscribeDiskSyncStatus,
+    getDiskToken,
+    setDiskToken,
+    fetchLocalDiskToken,
 } from './db/diskSync';
 

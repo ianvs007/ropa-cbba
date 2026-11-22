@@ -2,8 +2,14 @@ import {
     POS_DB_TABLES,
     decidirSincronizacionInicial,
 } from '../utils/localDiskDbEngine';
+import {
+    TOKEN_HEADER,
+    agregarTokenAUrl,
+    normalizarTokenIngresado,
+} from '../utils/localDiskDbAuth';
 
 const LAST_REV_STORAGE_KEY = 'pos_local_disk_last_rev';
+const TOKEN_STORAGE_KEY = 'pos_local_disk_token';
 
 const CLIENT_ID =
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -27,9 +33,13 @@ let lastKnownStatus = {
     backupsDir: '',
     backupsCount: 0,
     stats: null,
+    authRequired: false,
 };
 
 function notifyStatusListeners(patch = {}) {
+    if (patch.connected === true && patch.authRequired === undefined) {
+        patch = { ...patch, authRequired: false };
+    }
     lastKnownStatus = { ...lastKnownStatus, ...patch };
     for (const listener of statusListeners) {
         try {
@@ -44,6 +54,54 @@ export function subscribeDiskSyncStatus(listener) {
     statusListeners.add(listener);
     listener(lastKnownStatus);
     return () => statusListeners.delete(listener);
+}
+
+/**
+ * Token de acceso a la BD central. La propia máquina central no lo necesita (el servidor
+ * confía en las peticiones locales); las otras PCs de la red lo guardan acá (pantalla de
+ * Copias de Seguridad) con el valor que muestra la central.
+ */
+export function getDiskToken() {
+    try {
+        return localStorage.getItem(TOKEN_STORAGE_KEY) || '';
+    } catch {
+        return '';
+    }
+}
+
+export function setDiskToken(token) {
+    const limpio = normalizarTokenIngresado(token);
+    try {
+        if (limpio) localStorage.setItem(TOKEN_STORAGE_KEY, limpio);
+        else localStorage.removeItem(TOKEN_STORAGE_KEY);
+    } catch {
+        // Ignorar si localStorage no está disponible
+    }
+    return limpio;
+}
+
+/** Pide el token al servidor; solo responde a la máquina central (el resto recibe 403). */
+export async function fetchLocalDiskToken() {
+    try {
+        const res = await fetch('/__local_db/token', { cache: 'no-store' });
+        if (!res.ok) return null;
+        const data = await res.json();
+        return data.token || null;
+    } catch {
+        return null;
+    }
+}
+
+/** fetch hacia `/__local_db/*` con el token (si hay) y detección de acceso denegado. */
+async function diskFetch(url, init = {}) {
+    const token = getDiskToken();
+    const headers = { ...(init.headers || {}) };
+    if (token) headers[TOKEN_HEADER] = token;
+    const res = await fetch(url, { ...init, headers });
+    if (res.status === 401) {
+        notifyStatusListeners({ connected: false, authRequired: true });
+    }
+    return res;
 }
 
 function getStoredLastRev() {
@@ -117,7 +175,7 @@ export async function flushDiskSyncNow(db) {
 
     try {
         const tablesPayload = await readTablesFromDexie(db, tablesToPush);
-        const res = await fetch('/__local_db/sync', {
+        const res = await diskFetch('/__local_db/sync', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -138,6 +196,8 @@ export async function flushDiskSyncNow(db) {
                 updatedAt: data.updatedAt || new Date().toISOString(),
                 stats: data.stats || lastKnownStatus.stats,
             });
+        } else if (res.status === 401 || res.status === 403) {
+            tablesToPush.forEach(t => dirtyTables.add(t));
         }
     } catch {
         // Si falla momentáneamente, re-encolar las tablas para el próximo intento
@@ -191,7 +251,7 @@ function attachDexieHooks(db) {
 export async function forcePushBrowserToDisk(dbInstance) {
     const targetDb = dbInstance || (await import('./schema')).db;
     const allTables = await readTablesFromDexie(targetDb, POS_DB_TABLES);
-    const res = await fetch('/__local_db/sync', {
+    const res = await diskFetch('/__local_db/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -226,7 +286,7 @@ export async function forcePullDiskToBrowser(dbInstance, specificTables = null) 
         Array.isArray(specificTables) && specificTables.length > 0
             ? `?tables=${encodeURIComponent(specificTables.join(','))}`
             : '';
-    const res = await fetch(`/__local_db/snapshot${query}`, { cache: 'no-store' });
+    const res = await diskFetch(`/__local_db/snapshot${query}`, { cache: 'no-store' });
     if (!res.ok) {
         throw new Error('No se pudo leer la base de datos en disco local.');
     }
@@ -251,7 +311,7 @@ export async function forcePullDiskToBrowser(dbInstance, specificTables = null) 
  */
 export async function notifyDiskWipe() {
     try {
-        await fetch('/__local_db/sync', {
+        await diskFetch('/__local_db/sync', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -270,7 +330,7 @@ export async function notifyDiskWipe() {
  */
 export async function getDiskDbStatus() {
     try {
-        const res = await fetch('/__local_db/status', { cache: 'no-store' });
+        const res = await diskFetch('/__local_db/status', { cache: 'no-store' });
         if (!res.ok) throw new Error('Status no disponible');
         const data = await res.json();
         notifyStatusListeners({
@@ -294,7 +354,7 @@ export async function getDiskDbStatus() {
  * Solicita al servidor en disco que guarde una copia de seguridad inmediata en `datos-pos/backups/`.
  */
 export async function triggerDiskBackupNow() {
-    const res = await fetch('/__local_db/backup-now', {
+    const res = await diskFetch('/__local_db/backup-now', {
         method: 'POST',
     });
     if (!res.ok) {
@@ -317,7 +377,7 @@ export async function initDiskSync(db) {
     attachDexieHooks(db);
 
     try {
-        const res = await fetch('/__local_db/snapshot', { cache: 'no-store' });
+        const res = await diskFetch('/__local_db/snapshot', { cache: 'no-store' });
         if (!res.ok) {
             isBootstrapping = false;
             return;
@@ -351,7 +411,7 @@ export async function initDiskSync(db) {
     // Suscripción en tiempo real mediante Server-Sent Events (SSE)
     if (typeof EventSource !== 'undefined') {
         try {
-            const es = new EventSource('/__local_db/stream');
+            const es = new EventSource(agregarTokenAUrl('/__local_db/stream', getDiskToken()));
             es.onmessage = async ev => {
                 try {
                     const msg = JSON.parse(ev.data);

@@ -2,14 +2,48 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
 import process from 'node:process';
+import { randomBytes } from 'node:crypto';
 import {
 
     POS_DB_TABLES,
     calcularEstadisticasTablas,
     aplicarCambioEstadoDisco,
 } from '../utils/localDiskDbEngine.js';
+import { evaluarAccesoLocalDb, TOKEN_MIN_LENGTH } from '../utils/localDiskDbAuth.js';
 
 const MAX_AUTO_BACKUPS = 15;
+const MAX_BODY_BYTES = 256 * 1024 * 1024;
+const TOKEN_FILE_NAME = '.local-db-token';
+
+/**
+ * Resuelve el token de acceso de la BD central: variable `POS_LOCAL_DB_TOKEN` si existe
+ * (mín. 16 caracteres), si no el archivo `datos-pos/.local-db-token` (se crea con un valor
+ * aleatorio la primera vez; `datos-pos/` está en .gitignore).
+ */
+export function obtenerOCrearTokenLocalDb(dataDir, env = process.env) {
+    const deEntorno = (env.POS_LOCAL_DB_TOKEN || '').trim();
+    if (deEntorno) {
+        if (deEntorno.length < TOKEN_MIN_LENGTH) {
+            throw new Error(
+                `POS_LOCAL_DB_TOKEN debe tener al menos ${TOKEN_MIN_LENGTH} caracteres.`
+            );
+        }
+        return deEntorno;
+    }
+
+    const tokenPath = path.join(dataDir, TOKEN_FILE_NAME);
+    try {
+        const guardado = fs.readFileSync(tokenPath, 'utf-8').trim();
+        if (guardado.length >= TOKEN_MIN_LENGTH) return guardado;
+    } catch {
+        // No existe todavía: se genera abajo
+    }
+
+    const nuevo = randomBytes(24).toString('hex');
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(tokenPath, `${nuevo}\n`, { encoding: 'utf-8', mode: 0o600 });
+    return nuevo;
+}
 
 /**
  * Crea el estado vacío inicial cuando aún no existe archivo en disco.
@@ -148,7 +182,18 @@ function crearBackupEnDisco(backupsDir, estado, prefijo = 'backup-manual') {
 function leerJsonBody(req) {
     return new Promise((resolve, reject) => {
         const chunks = [];
-        req.on('data', chunk => chunks.push(chunk));
+        let recibidos = 0;
+        req.on('data', chunk => {
+            recibidos += chunk.length;
+            if (recibidos > MAX_BODY_BYTES) {
+                const err = new Error('El cuerpo de la petición supera el tamaño máximo permitido');
+                err.statusCode = 413;
+                reject(err);
+                req.destroy();
+                return;
+            }
+            chunks.push(chunk);
+        });
         req.on('end', () => {
             try {
                 const raw = Buffer.concat(chunks).toString('utf-8');
@@ -177,6 +222,13 @@ export function crearMiddlewareLocalDiskDb(options = {}) {
     const dataDir = options.dataDir || path.join(rootDir, 'datos-pos');
     const dbFilePath = path.join(dataDir, 'pos-db.json');
     const backupsDir = path.join(dataDir, 'backups');
+    let token = options.token;
+    const resolverToken = () => {
+        if (!token) token = obtenerOCrearTokenLocalDb(dataDir);
+        return token;
+    };
+    const confiarLoopback =
+        options.confiarLoopback ?? process.env.POS_LOCAL_DB_TRUST_LOOPBACK !== '0';
 
     let estado = cargarEstadoDesdeDisco(dbFilePath);
     const sseClients = new Set();
@@ -209,6 +261,34 @@ export function crearMiddlewareLocalDiskDb(options = {}) {
         const parsedUrl = new URL(req.url, 'http://localhost');
         const pathname = parsedUrl.pathname;
 
+        const acceso = evaluarAccesoLocalDb({
+            headers: req.headers,
+            searchParams: parsedUrl.searchParams,
+            remoteAddress: req.socket?.remoteAddress,
+            token: resolverToken(),
+            confiarLoopback,
+        });
+        if (!acceso.permitido) {
+            return enviarJson(res, acceso.status, {
+                ok: false,
+                codigo: acceso.codigo,
+                error: acceso.mensaje,
+            });
+        }
+        const esLocal = acceso.via === 'loopback';
+
+        // 0. Token de acceso: solo se entrega a la propia máquina (para configurar otras PCs)
+        if (req.method === 'GET' && pathname === '/__local_db/token') {
+            if (!esLocal) {
+                return enviarJson(res, 403, {
+                    ok: false,
+                    codigo: 'solo_local',
+                    error: 'El token solo puede consultarse desde la máquina central.',
+                });
+            }
+            return enviarJson(res, 200, { ok: true, token: resolverToken() });
+        }
+
         // 1. SSE Stream para sincronización en tiempo real entre navegadores y PCs en red
         if (req.method === 'GET' && pathname === '/__local_db/stream') {
             res.statusCode = 200;
@@ -240,8 +320,7 @@ export function crearMiddlewareLocalDiskDb(options = {}) {
                 initialized: estado.initialized,
                 revision: estado.revision,
                 updatedAt: estado.updatedAt,
-                dbPath: dbFilePath,
-                backupsDir,
+                ...(esLocal ? { dbPath: dbFilePath, backupsDir } : {}),
                 backupsCount: contarBackups(),
                 connectedClients: sseClients.size,
                 stats: calcularEstadisticasTablas(estado.tables),
@@ -317,7 +396,7 @@ export function crearMiddlewareLocalDiskDb(options = {}) {
                 });
             } catch (err) {
                 console.error('[LocalDiskDB] Error guardando sync en disco:', err);
-                return enviarJson(res, 500, {
+                return enviarJson(res, err.statusCode || 500, {
                     ok: false,
                     error: err.message || 'Error guardando en disco',
                 });
@@ -331,7 +410,7 @@ export function crearMiddlewareLocalDiskDb(options = {}) {
                 return enviarJson(res, 200, {
                     ok: true,
                     fileName: info.fileName,
-                    fullPath: info.fullPath,
+                    ...(esLocal ? { fullPath: info.fullPath } : {}),
                     backupsCount: contarBackups(),
                 });
             } catch (err) {

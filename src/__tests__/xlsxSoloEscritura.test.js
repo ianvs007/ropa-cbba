@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Guarda de seguridad: `xlsx` 0.18.5 tiene avisos conocidos (prototype pollution y ReDoS)
@@ -8,7 +9,7 @@ import path from 'node:path';
  * (exportación de stock). Si alguien agrega lectura de archivos, este test obliga a
  * revisar la mitigación documentada en AGENTS.md antes de aceptar el cambio.
  */
-const RAIZ_SRC = path.resolve(__dirname, '..');
+const RAIZ_SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LECTURAS_PROHIBIDAS = [/XLSX\.read\s*\(/, /XLSX\.readFile\s*\(/, /\bread(File)?\s*\(\s*[^)]*type\s*:\s*['"](array|binary|buffer)/];
 
 function archivosFuente(dir) {
