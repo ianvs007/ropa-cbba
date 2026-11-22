@@ -1,6 +1,7 @@
 import React from 'react';
 import {
     exportDatabase,
+    exportDatabaseSinSecretos,
     importDatabase,
     resetForProduction,
     deleteEntireDatabase,
@@ -84,7 +85,28 @@ export default function Backup() {
             anchor.download = `backup_tienda_ropa_${fecha}.json`;
             anchor.click();
             URL.revokeObjectURL(url);
-            showMsg('success', '✅ Backup exportado correctamente');
+            showMsg('success', '✅ Backup exportado. Incluye caja y hashes de contraseña: guárdalo en privado.');
+        } catch (err) {
+            showMsg('error', `Error al exportar: ${err.message}`);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleExportSinSecretos = async () => {
+        setLoading(true);
+        try {
+            const data = await exportDatabaseSinSecretos();
+            const json = JSON.stringify(data, null, 2);
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            const fecha = new Date().toISOString().slice(0, 10);
+            anchor.href = url;
+            anchor.download = `backup_tienda_ropa_sin_secretos_${fecha}.json`;
+            anchor.click();
+            URL.revokeObjectURL(url);
+            showMsg('success', '✅ Copia sin secretos exportada. No restaura contraseñas ni el token de sincronización.');
         } catch (err) {
             showMsg('error', `Error al exportar: ${err.message}`);
         } finally {
@@ -114,9 +136,10 @@ export default function Backup() {
         if (!confirmImport) return;
         setLoading(true);
         try {
-            await importDatabase(confirmImport);
+            const resultado = await importDatabase(confirmImport);
             setConfirmImport(null);
-            showMsg('success', '✅ Datos importados correctamente. Recarga la página para ver los cambios.');
+            const aviso = resultado?.avisos?.length ? ` ${resultado.avisos[0]}` : '';
+            showMsg('success', `✅ Datos importados correctamente.${aviso} Recarga la página para ver los cambios.`);
         } catch (err) {
             showMsg('error', `Error al importar: ${err.message}`);
         } finally {
@@ -259,7 +282,9 @@ export default function Backup() {
                             { label: 'Prendas', val: confirmImport.data?.products?.length || 0 },
                             { label: 'Ventas', val: confirmImport.data?.sales?.length || 0 },
                             { label: 'Movimientos', val: confirmImport.data?.kardex?.length || 0 },
-                            { label: 'Usuarios', val: confirmImport.data?.users?.length || 0 }
+                            { label: 'Usuarios', val: confirmImport.data?.users?.length || 0 },
+                            { label: 'Aperturas', val: Array.isArray(confirmImport.data?.cashOpenings) ? confirmImport.data.cashOpenings.length : '—' },
+                            { label: 'Cierres', val: Array.isArray(confirmImport.data?.cashClosures) ? confirmImport.data.cashClosures.length : '—' },
                         ].map((stat, i) => (
                             <div key={i} className="text-center group">
                                 <p className="text-3xl font-black text-amber-900 group-hover:scale-110 transition-transform">{stat.val}</p>
@@ -267,6 +292,19 @@ export default function Backup() {
                             </div>
                         ))}
                     </div>
+                    {confirmImport.sinSecretos && (
+                        <p className="mt-6 text-xs font-bold text-amber-800 text-center leading-relaxed">{confirmImport.aviso}</p>
+                    )}
+                    {!confirmImport.sinSecretos && confirmImport.data?.users?.some(u => u.password === '***') && (
+                        <p className="mt-6 text-xs font-bold text-amber-800 text-center leading-relaxed">
+                            Este archivo trae contraseñas enmascaradas (***). Se conservan las claves actuales de esta máquina. Un usuario que solo existe así no se puede restaurar.
+                        </p>
+                    )}
+                    {!Array.isArray(confirmImport.data?.cashClosures) && (
+                        <p className="mt-6 text-xs font-bold text-amber-800 text-center leading-relaxed">
+                            Este archivo no trae caja ni cierres. La caja de esta máquina no se modifica.
+                        </p>
+                    )}
                 </div>
 
                 <div className="bg-red-50 border border-red-100 rounded-[2rem] p-6 text-center mb-12">
@@ -392,23 +430,42 @@ export default function Backup() {
                         <h2 className="font-bold text-pink-900 mb-1">Exportar Backup</h2>
                         <p className="text-sm text-pink-500 mb-4">
                             Descarga un archivo <code className="bg-pink-100 px-1 rounded text-xs">.json</code> con
-                            todos los datos del sistema: productos, ventas, inventario, gastos, usuarios y configuración.
+                            productos, ventas, inventario, gastos, aperturas y cierres de caja, usuarios y configuración.
+                            El archivo completo guarda el hash de cada contraseña (no lo cambia por ***) y puede incluir
+                            el token de sincronización, para poder restaurar el inicio de sesión.
                         </p>
                         <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 flex items-start gap-2">
                             <AlertTriangle size={15} className="text-amber-600 shrink-0 mt-0.5" />
                             <p className="text-xs text-amber-700">
-                                <strong>Recomendación:</strong> Realiza backups diarios y guárdalos en una carpeta segura
-                                o en un USB externo. Nunca elimines backups anteriores.
+                                <strong>Recomendación:</strong> Realiza backups diarios y guárdalos en un lugar privado
+                                o en un USB externo. Nunca elimines backups anteriores. Quien tenga el archivo completo
+                                puede restaurar el acceso a las cuentas.
                             </p>
                         </div>
-                        <button
-                            id="backup-export"
-                            onClick={handleExport}
-                            disabled={loading}
-                            className="btn-primary flex items-center gap-2 disabled:opacity-50">
-                            <Download size={18} />
-                            {loading ? 'Exportando...' : 'Descargar Backup'}
-                        </button>
+                        <div className="flex flex-wrap gap-2">
+                            <button
+                                id="backup-export"
+                                onClick={handleExport}
+                                disabled={loading}
+                                className="btn-primary flex items-center gap-2 disabled:opacity-50">
+                                <Download size={18} />
+                                {loading ? 'Exportando...' : 'Descargar Backup'}
+                            </button>
+                            <button
+                                id="backup-export-seguro"
+                                type="button"
+                                onClick={handleExportSinSecretos}
+                                disabled={loading}
+                                className="btn-secondary flex items-center gap-2 disabled:opacity-50">
+                                <Download size={18} />
+                                Copia sin secretos
+                            </button>
+                        </div>
+                        <p className="text-xs text-pink-400 mt-3">
+                            La copia sin secretos omite hashes de contraseña y el token de la tienda virtual, y lo avisa
+                            dentro del archivo. Sirve para revisar datos. No restaura el inicio de sesión ni la sincronización.
+                            La caja y los cierres sí van en las dos copias.
+                        </p>
                     </div>
                 </div>
             </div>
