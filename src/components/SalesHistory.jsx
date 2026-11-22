@@ -4,6 +4,7 @@ import { db, syncClosureIfDateExists, getLocalISOString } from '../db';
 import { ClipboardList, X, Printer, Filter, RotateCcw, XCircle, Package, CheckCircle, Tag, Receipt, DollarSign, TrendingUp, Wallet, CreditCard, User } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { printTicketGlobal, printCashClosuresReport } from '../utils';
+import { montoImpresoRecibido } from '../utils/cobro';
 import useSecureDate from '../hooks/useSecureDate';
 import { useUser } from '../contexts/UserContext';
 /**
@@ -473,7 +474,7 @@ export default function SalesHistory() {
                                             <div className="flex items-center gap-2">
                                                 <button onClick={() => {
                                                     const enriched = enrichItems(s.items, s.date);
-                                                    printTicketGlobal(s.id, enriched, s.total, s.paymentMethod || 'historial', s.received || s.total, s.change || 0, { name: s.sellerName }, s.discount || 0, s.clientName ? { name: s.clientName, phone: s.clientPhone } : null);
+                                                    printTicketGlobal(s.id, enriched, s.total, s.paymentMethod || 'historial', montoImpresoRecibido(s), s.change ?? 0, { name: s.sellerName }, s.discount || 0, s.clientName ? { name: s.clientName, phone: s.clientPhone } : null);
                                                 }} className="text-blue-500 hover:text-blue-700 transition-colors" title="Reimprimir Nota de Venta"><Printer size={15} /></button>
                                                 {user?.role === 'admin' && (
                                                     <button

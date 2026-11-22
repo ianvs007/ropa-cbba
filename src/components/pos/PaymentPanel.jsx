@@ -1,6 +1,7 @@
 import React from 'react';
 import { CheckCircle, Printer, AlertCircle, Tag } from 'lucide-react';
 import { formatCurrency } from '../../utils';
+import { validarCobro } from '../../utils/cobro';
 
 /**
  * 💳 PaymentPanel — Panel de cobro del POS
@@ -22,23 +23,32 @@ export default function PaymentPanel({ total, totalDiscount = 0, currency, cart,
     const [clientName, setClientName] = React.useState('');
     const [clientPhone, setClientPhone] = React.useState('');
 
-    const receivedVal = parseFloat(received || 0);
-    const changeAmount = receivedVal - total;
+    const cobro = validarCobro({ payment, received, total });
+    const client = clientName.trim() ? { name: clientName.trim(), phone: clientPhone.trim() } : null;
 
-    const handleSell = () => onSell({
-        payment,
-        received: receivedVal,
-        client: clientName.trim() ? { name: clientName.trim(), phone: clientPhone.trim() } : null,
-    });
+    const handleSell = () => {
+        if (!cobro.ok) return;
+        onSell({ payment, received: cobro.received, client });
+    };
 
-    // F12 global para cobrar
+    // F12 global para cobrar. El atajo usa la misma regla que el botón:
+    // en efectivo, sin monto que cubra el total, no hay venta.
     React.useEffect(() => {
         const handleKey = (e) => {
-            if (e.key === 'F12') { e.preventDefault(); if (cart.length > 0 && !loading) handleSell(); }
+            if (e.key !== 'F12') return;
+            e.preventDefault();
+            if (cart.length === 0 || loading) return;
+            const resultado = validarCobro({ payment, received, total });
+            if (!resultado.ok) return;
+            onSell({
+                payment,
+                received: resultado.received,
+                client: clientName.trim() ? { name: clientName.trim(), phone: clientPhone.trim() } : null,
+            });
         };
         window.addEventListener('keydown', handleKey);
         return () => window.removeEventListener('keydown', handleKey);
-    }, [cart.length, loading, payment, receivedVal, clientName, clientPhone]);
+    }, [cart.length, loading, payment, received, total, clientName, clientPhone, onSell]);
 
     React.useEffect(() => {
         if (success) {
@@ -93,9 +103,9 @@ export default function PaymentPanel({ total, totalDiscount = 0, currency, cart,
                         <label className="text-xs font-semibold text-pink-800">
                             Monto recibido ({currency})
                         </label>
-                        {receivedVal > 0 && (
-                            <span className={`text-xs font-bold ${changeAmount < 0 ? 'text-red-500' : 'text-green-600'}`}>
-                                Cambio: {formatCurrency(Math.max(0, changeAmount), currency)}
+                        {cobro.ok && (
+                            <span className="text-xs font-bold text-green-600">
+                                Cambio: {formatCurrency(cobro.change, currency)}
                             </span>
                         )}
                     </div>
@@ -107,9 +117,12 @@ export default function PaymentPanel({ total, totalDiscount = 0, currency, cart,
                         onChange={e => setReceived(e.target.value)}
                         placeholder="0.00"
                         className={`fashion-input no-spinner h-10 text-sm font-bold ${
-                            receivedVal > 0 && changeAmount < 0 ? 'border-red-400' : ''
+                            cart.length > 0 && !cobro.ok ? 'border-red-400' : ''
                         }`}
                     />
+                    {cart.length > 0 && !cobro.ok && (
+                        <p className="text-xs font-semibold text-red-600">{cobro.error}</p>
+                    )}
                 </div>
             )}
 
@@ -157,7 +170,7 @@ export default function PaymentPanel({ total, totalDiscount = 0, currency, cart,
             <button
                 id="pos-checkout"
                 onClick={handleSell}
-                disabled={cart.length === 0 || loading}
+                disabled={cart.length === 0 || loading || !cobro.ok}
                 className="btn-primary w-full flex items-center justify-center gap-2 py-3 text-base disabled:opacity-40 disabled:cursor-not-allowed">
                 <Printer size={18} />
                 {loading ? 'Procesando...' : (

@@ -2,6 +2,7 @@ import React from 'react';
 import { ShoppingCart, Store, ArrowRightLeft } from 'lucide-react';
 import { db, syncClosureIfDateExists, getLocalISOString } from '../db';
 import { printTicketGlobal, formatCurrency } from '../utils';
+import { validarCobro } from '../utils/cobro';
 import { useAvailableStock } from '../hooks/useAvailableStock';
 import { useLiveQuery } from 'dexie-react-hooks';
 import useCashRegister from '../hooks/useCashRegister';
@@ -129,6 +130,14 @@ export default function POS() {
 
     const handleSale = async ({ payment, received, client }) => {
         if (cart.length === 0) return;
+        const total = cart.reduce((s, i) => s + i.price * i.qty, 0);
+        const originalTotal = cart.reduce((s, i) => s + i.originalPrice * i.qty, 0);
+        const totalDiscount = Math.round((originalTotal - total) * 100) / 100;
+        const cobro = validarCobro({ payment, received, total });
+        if (!cobro.ok) {
+            setError(cobro.error);
+            return;
+        }
         setLoading(true); setError('');
         try {
             // ── Validación previa de stock (lectura rápida antes de la transacción) ──
@@ -146,10 +155,6 @@ export default function POS() {
                     throw new Error(`El precio de "${item.name}" no puede ser igual o menor al costo`);
                 }
             }
-
-            const total = cart.reduce((s, i) => s + i.price * i.qty, 0);
-            const originalTotal = cart.reduce((s, i) => s + i.originalPrice * i.qty, 0);
-            const totalDiscount = Math.round((originalTotal - total) * 100) / 100;
 
             const nowAdjusted = getLocalISOString();
 
@@ -238,8 +243,8 @@ export default function POS() {
                         originalTotal: originalTotal !== total ? originalTotal : undefined,
                         discount: totalDiscount > 0 ? totalDiscount : undefined,
                         paymentMethod: payment,
-                        received: payment === 'efectivo' ? received : total,
-                        change: payment === 'efectivo' ? Math.max(0, received - total) : 0,
+                        received: cobro.received,
+                        change: cobro.change,
                         sellerId: user?.id,
                         sellerName: user?.name || user?.username,
                         shiftId: shiftId || undefined,
@@ -251,7 +256,7 @@ export default function POS() {
                 });
 
             await syncClosureIfDateExists(nowAdjusted, user?.id, shiftId);
-            printTicketGlobal(saleId, cartWithCodes, total, payment, received, received - total, user, totalDiscount, client);
+            printTicketGlobal(saleId, cartWithCodes, total, payment, cobro.received, cobro.change, user, totalDiscount, client);
 
             setCart([]);
             setSuccess(true);
