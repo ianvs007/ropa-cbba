@@ -3,6 +3,11 @@ REM ============================================================
 REM  TIENDA DE ROPA - Inicio Silencioso
 REM  Lanza el servidor en segundo plano (sin ventana) y abre
 REM  el navegador en Modo App (sin barra de direcciones).
+REM
+REM  Sirve el build estatico de dist/ con "vite preview" (npm run start),
+REM  NO el servidor de desarrollo. Si cambia el codigo fuente hay que
+REM  regenerar dist/ (npm run build). Para limitar el servidor a esta PC
+REM  (sin otras PCs en la red) definir POS_HOST=127.0.0.1 antes de lanzar.
 REM ============================================================
 
 setlocal enabledelayedexpansion
@@ -14,6 +19,11 @@ cd /d "!PROJECT_DIR!"
 REM Mata cualquier proceso que este usando el puerto 3001 (Inicio Limpio)
 for /f "tokens=5" %%a in ('netstat -aon ^| find ":3001" ^| find "LISTENING"') do taskkill /f /pid %%a >nul 2>&1
 
+REM Si no existe el build (dist/), generarlo antes de servir
+if not exist "!PROJECT_DIR!dist\index.html" (
+    call npm.cmd run build >nul 2>&1
+)
+
 REM ============================================================
 REM  Crea un script VBS para ejecutar npm SIN ventana visible
 REM ============================================================
@@ -21,7 +31,7 @@ set "VBS_FILE=%TEMP%\run_tienda_ropa.vbs"
 
 (
     echo Set objShell = CreateObject("WScript.Shell"^)
-    echo strCommand = "cmd.exe /c cd /d ""!PROJECT_DIR!"" && npm run dev"
+    echo strCommand = "cmd.exe /c cd /d ""!PROJECT_DIR!"" && npm run start"
     echo objShell.Run strCommand, 0, False
 ) > "!VBS_FILE!"
 

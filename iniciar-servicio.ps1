@@ -8,8 +8,13 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
     exit
 }
 
-# Inicia el servidor en puerto 3001
+# Si no existe el build (dist/), generarlo antes de servir
+if (-not (Test-Path "dist\index.html")) {
+    npm run build
+}
+
+# Sirve el build estatico en puerto 3001 (vite preview, no modo desarrollo)
 Write-Host "Iniciando Tienda de Ropa en http://localhost:3001 ..." -ForegroundColor Magenta
-npm run dev
+npm run start
 
 Read-Host "Presiona Enter para cerrar"
