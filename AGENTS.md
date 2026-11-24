@@ -1,11 +1,12 @@
 # AGENTS.md — ropa-cbba (Tienda de Ropa)
 
 POS **offline** para tienda de ropa en Cochabamba: React 19 + Vite + Dexie.js
-(IndexedDB, schema **v23**) + Tailwind. Corre en 3 máquinas de producción como
-ventana de navegador lanzada por `iniciar-servicio-silencioso.bat`; cada máquina
-tiene su propia base de datos local (sin servidor). Desde el 27/07/2026 existe
-sincronización manual vía Excel con la tienda virtual (pantalla `/sync`); desde
-el 22/08/2026 la identidad de cruce con la nube es el `globalId` (UUID estable).
+(IndexedDB, schema **v28**) + **SQLite en disco (`datos-pos/pos.sqlite`, `node:sqlite` WAL)**
++ **imágenes físicas en `datos-pos/imagenes/`** + Tailwind. Corre en 3 máquinas
+de producción como ventana de navegador lanzada por `iniciar-servicio-silencioso.bat`
+(Node 22.5+ / 24+). Desde el 27/07/2026 existe sincronización con la tienda virtual
+(pantalla `/sync`); desde el 22/08/2026 la identidad de cruce con la nube es el
+`globalId` (UUID estable).
 
 ## Convenciones de trabajo
 
@@ -604,3 +605,32 @@ autoridad; el botón "Vaciar nube" era TEMPORAL y se RETIRÓ el 11/09 15:40
  central, usar **intervalo 15–30 min** (no el default de 10) para dejar margen
  al catálogo público; el default sigue en 10 en `INTERVALO_AUTO_DEFAULT_MIN`.
  Alternativa descartada por ahora (decisión de Alain): Workers Paid USD 5/mes.
+
+## Registro de actualizaciones — Noviembre 2026
+
+### ✅ Migración a SQLite en disco + carpeta física de imágenes (23–24/11/2026)
+
+26. **SQLite nativo (`datos-pos/pos.sqlite`) + imágenes separadas (`datos-pos/imagenes/`) + schema v28** (`4f9e27e`..`41b5f94`):
+    al cambiar de PC la tienda principal (`C:\sistema no borrar\ropa-cbba`), el
+    backup `.json` pesaba ~303 MB por las fotos en Base64 dentro de `products` y
+    `sales.items` más los vectores `embedding` (1024 floats), agotando la RAM de
+    Chrome al restaurar y tardando segundos al cambiar entre menús (`db.products.toArray()`).
+    - `src/server/sqliteStore.js` + `src/server/localDiskDbPlugin.js`: usa
+      `node:sqlite` (`DatabaseSync` en modo WAL, integrado en Node 22.5+/24+, sin
+      compilación nativa `node-gyp`). Extrae automáticamente cualquier `data:image/`
+      de `products` y `sales.items` a archivos reales en `datos-pos/imagenes/`
+      servidos bajo `/__local_media/<archivo>` con caché inmutable por SHA-1, y
+      genera respaldos `.sqlite` con `VACUUM INTO` en `datos-pos/backups/`.
+    - `src/db/schema.js` (**v28**): nueva tabla `productEmbeddings` separada de
+      `products`; `products` queda en < 1 MB (~400x más liviano) y cambiar de menú
+      pasa a milisegundos.
+    - `src/db/diskSync.js`: sincronización incremental por fila (`mode: 'ops'`),
+      chequeo rápido `/__local_db/status` al arrancar (`noop` si la revisión no
+      cambió) e importación de backups pesados por streaming directo a SQLite
+      (`POST /__local_db/import-backup`).
+    - `migrar-json-a-sqlite.mjs`: CLI para convertir backups `.json` de 300+ MB
+      directamente a `datos-pos/pos.sqlite` + `datos-pos/imagenes/`.
+    - `ACTUALIZAR_SISTEMA.bat`: actualizador en 1 clic para las tiendas (detiene
+      `node.exe`, respalda `pos.sqlite`, ejecuta `git pull --ff-only origin main`,
+      corre `npm ci` solo si cambió `package-lock.json` y relanza el servicio).
+    - **299/299 tests** en verde + `dist/` actualizado y verificado en producción.
