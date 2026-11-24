@@ -7,6 +7,7 @@ import {
     POS_DB_TABLES,
     obtenerClavePrimariaFila,
 } from '../utils/localDiskDbEngine.js';
+import { componerTablasRestauracion } from '../utils/backupDatos.js';
 
 const MAX_AUTO_BACKUPS = 15;
 const MEDIA_URL_PREFIX = '/__local_media/';
@@ -601,83 +602,65 @@ export class SqlitePosStore {
      * Importa un archivo `.json` completo (incluso de 300+ MB) directamente en Node.js + SQLite,
      * extrayendo fotos Base64 a `datos-pos/imagenes/`, separando `productEmbeddings` y preservando
      * hashes de contraseñas existentes cuando el backup trae `password: '***'`.
+     * Un usuario que solo existe enmascarado no se crea con una clave inventada.
+     * Las tablas que el archivo no trae (caja de un v10/v11, token de una copia
+     * sin secretos) no se vacían.
      */
     importBackupJsonString(rawJson) {
         const parsed = JSON.parse(rawJson);
-        const src = parsed?.tables || parsed?.data;
-        if (!src || typeof src !== 'object') {
+        const data = parsed?.data || parsed?.tables;
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
             throw new Error('Archivo de backup inválido: no contiene tablas reconocibles.');
         }
 
-        const existingUsers = this.getTables(['users']).users || [];
-        const passByUsername = new Map();
-        const passById = new Map();
-        for (const u of existingUsers) {
-            if (u?.password && u.password !== '***') {
-                if (u.username) passByUsername.set(String(u.username).toLowerCase(), u.password);
-                if (u.id !== undefined) passById.set(String(u.id), u.password);
-            }
+        const actuales = this.getTables();
+        const compuesto = componerTablasRestauracion(
+            { ...parsed, data },
+            actuales,
+        );
+        if (!compuesto.ok) {
+            throw new Error(compuesto.error || 'Archivo de backup inválido');
         }
 
-        const tables = {};
-        for (const t of POS_DB_TABLES) {
-            tables[t] = Array.isArray(src[t]) ? [...src[t]] : [];
-        }
+        const tables = compuesto.tablas;
 
-        // Normalizar productos (globalId, updatedAt, shortCode)
-        const usedCodes = new Set();
-        let maxCode = 0;
-        for (const p of tables.products) {
-            const n = parseInt(p?.shortCode, 10);
-            if (!isNaN(n)) {
-                usedCodes.add(n);
-                if (n > maxCode) maxCode = n;
-            }
-        }
-        let nextCode = maxCode + 1;
-        tables.products = tables.products.map(p => {
-            const copy = { ...p };
-            if (!copy.globalId) copy.globalId = crypto.randomUUID();
-            if (!copy.updatedAt) copy.updatedAt = copy.createdAt || new Date().toISOString();
-            if (!copy.shortCode) {
-                while (usedCodes.has(nextCode)) nextCode++;
-                copy.shortCode = String(nextCode).padStart(5, '0');
-                usedCodes.add(nextCode++);
-            }
-            return copy;
-        });
-
-        // Preservar usuarios y sus contraseñas si venían enmascaradas ('***')
-        if (tables.users.length === 0 && existingUsers.length > 0) {
-            tables.users = existingUsers;
-        } else if (tables.users.length === 0) {
-            tables.users = [
-                { id: 1, username: 'admin', password: 'admin123', role: 'admin', name: 'Administrador', active: true },
-                { id: 2, username: 'cajera', password: 'cajera123', role: 'seller', name: 'Cajera', active: true },
-            ];
-        } else {
-            tables.users = tables.users.map(u => {
-                if (!u.password || u.password === '***') {
-                    const prev =
-                        (u.username && passByUsername.get(String(u.username).toLowerCase())) ||
-                        (u.id !== undefined && passById.get(String(u.id)));
-                    return {
-                        ...u,
-                        password: prev || (u.role === 'admin' ? 'admin123' : '123456'),
-                    };
+        if (compuesto.reemplazadas.includes('products')) {
+            const usedCodes = new Set();
+            let maxCode = 0;
+            for (const p of tables.products) {
+                const n = parseInt(p?.shortCode, 10);
+                if (!isNaN(n)) {
+                    usedCodes.add(n);
+                    if (n > maxCode) maxCode = n;
                 }
-                return u;
+            }
+            let nextCode = maxCode + 1;
+            tables.products = tables.products.map(p => {
+                const copy = { ...p };
+                if (!copy.globalId) copy.globalId = crypto.randomUUID();
+                if (!copy.updatedAt) copy.updatedAt = copy.createdAt || new Date().toISOString();
+                if (!copy.shortCode) {
+                    while (usedCodes.has(nextCode)) nextCode++;
+                    copy.shortCode = String(nextCode).padStart(5, '0');
+                    usedCodes.add(nextCode++);
+                }
+                return copy;
             });
         }
 
         const nextRev = Math.max(this.getRevision(), Number(parsed.revision) || 0) + 1;
-        return this.applySync({
+        const aplicado = this.applySync({
             mode: 'full',
             clientId: 'server-backup-import',
             tables,
             forceRevision: nextRev,
             forceInitialized: true,
         });
+        return {
+            ...aplicado,
+            avisos: compuesto.avisos,
+            usuariosOmitidos: compuesto.usuariosOmitidos,
+        };
     }
 
     /**

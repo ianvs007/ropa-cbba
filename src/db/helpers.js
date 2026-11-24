@@ -6,6 +6,14 @@ import { planificarAlineacionEtiquetas } from '../utils/alinearCodigosEtiqueta';
 import { CLAVES_SYNC_V2, INTERVALO_AUTO_DEFAULT_MIN, PAGO_VENTA_EN_LINEA } from '../utils/syncV2';
 import { planificarIngresoSucursal } from '../utils/branchTransferIn';
 import { forcePushBrowserToDisk, notifyDiskWipe, runWithDiskSyncPaused } from './diskSync';
+import {
+    TABLAS_BACKUP,
+    TABLAS_CAJA,
+    armarBackup,
+    armarBackupSinSecretos,
+    planificarImportacion,
+    debeReemplazarUsuarios,
+} from '../utils/backupDatos';
 
 // ==============================================================================
 // 🔧 HELPERS — Funciones utilitarias de base de datos
@@ -712,37 +720,22 @@ export async function registerBranchTransferInProduct({
     });
 }
 
-/** Exporta toda la base de datos como JSON para backup */
-export async function exportDatabase() {
-    const [
-        products, productEmbeddings, kardex, sales, expenseCategories, expenses,
-        users, settingsRaw, reservations, reservationPayments,
-        categories, productNames, productFields, barcodes, brands, colors,
-        branches, branchTransfers, webEventos,
-    ] = await Promise.all([
-        db.products.toArray(),
-        db.productEmbeddings ? db.productEmbeddings.toArray() : Promise.resolve([]),
-        db.kardex.toArray(),
-        db.sales.toArray(),
-        db.expenseCategories.toArray(),
-        db.expenses.toArray(),
-        db.users.toArray(),
-        db.settings.toArray(),
-        db.reservations.toArray(),
-        db.reservationPayments.toArray(),
-        db.categories.toArray(),
-        db.productNames.toArray(),
-        db.productFields.toArray(),
-        db.barcodes.toArray(),
-        db.brands.toArray(),
-        db.colors.toArray(),
-        db.branches ? db.branches.toArray() : Promise.resolve([]),
-        db.branchTransfers ? db.branchTransfers.toArray() : Promise.resolve([]),
-        db.webEventos.toArray(),
-    ]);
+async function leerTablaBackup(nombre) {
+    const table = db[nombre];
+    if (!table || typeof table.toArray !== 'function') return [];
+    return table.toArray();
+}
 
-    // Asegurar que cada producto tenga globalId y updatedAt (sin incrustar embedding en products)
-    const productsWithGlobalId = products.map(p => {
+/**
+ * Lee las tablas que viajan en el backup (las mismas del SQLite, schema v28)
+ * y completa la identidad de cada producto. El vector no va dentro de la prenda.
+ */
+async function leerTablasBackup() {
+    const tablas = {};
+    await Promise.all(TABLAS_BACKUP.map(async (nombre) => {
+        tablas[nombre] = await leerTablaBackup(nombre);
+    }));
+    tablas.products = (tablas.products || []).map(p => {
         const clean = {
             ...p,
             globalId: p.globalId || crypto.randomUUID(),
@@ -751,26 +744,43 @@ export async function exportDatabase() {
         delete clean.embedding;
         return clean;
     });
-
-    const safeUsers = users.map(u => ({ ...u, password: '***' }));
-
-    return {
-        version: 11,
-        exportedAt: new Date().toISOString(),
-        data: {
-            products: productsWithGlobalId, productEmbeddings, kardex, sales, expenseCategories, expenses,
-            users: safeUsers, settings: settingsRaw, reservations, reservationPayments,
-            categories, productNames, productFields, barcodes, brands, colors, branches, branchTransfers,
-            // Sync v2: los eventos web ya aplicados viajan con el backup para que
-            // una restauración no vuelva a descontar las mismas ventas.
-            webEventos,
-        },
-    };
+    return tablas;
 }
 
-/** Importa un backup JSON a la base de datos */
+/**
+ * Exporta toda la base de datos como JSON (versión 12).
+ * Incluye caja (aperturas, cierres, historial y logs), embeddings y el hash
+ * de cada contraseña. Reemplazarlo por *** impediría volver a entrar.
+ * El archivo también puede traer syncToken; hay que guardarlo en privado.
+ */
+export async function exportDatabase() {
+    const tablas = await leerTablasBackup();
+    return armarBackup(tablas, { exportedAt: new Date().toISOString() });
+}
+
+/**
+ * Misma copia, sin hashes de contraseña ni settings secretos.
+ * El archivo trae `aviso` y `omitidos`. No sirve para recuperar el login.
+ * La caja y los embeddings sí viajan.
+ */
+export async function exportDatabaseSinSecretos() {
+    const tablas = await leerTablasBackup();
+    return armarBackupSinSecretos(tablas, { exportedAt: new Date().toISOString() });
+}
+
+/** Importa un backup JSON a la base de datos del navegador. */
 export async function importDatabase(backupObj) {
-    const { data } = backupObj;
+    const [usuariosActuales, settingsActuales] = await Promise.all([
+        db.users.toArray(),
+        db.settings.toArray(),
+    ]);
+    const plan = planificarImportacion(backupObj, { usuariosActuales, settingsActuales });
+    if (!plan.ok) throw new Error(plan.error);
+
+    const reemplazarUsuarios = debeReemplazarUsuarios(plan);
+    const traeProductos = Array.isArray(plan.tablas.products);
+    const traeEmbeddings = Array.isArray(plan.tablas.productEmbeddings);
+
     const tablas = [
         db.products, db.kardex, db.sales,
         db.expenseCategories, db.expenses, db.settings,
@@ -781,18 +791,22 @@ export async function importDatabase(backupObj) {
     if (db.productEmbeddings) tablas.push(db.productEmbeddings);
     if (db.branches) tablas.push(db.branches);
     if (db.branchTransfers) tablas.push(db.branchTransfers);
+    if (reemplazarUsuarios && db.users) tablas.push(db.users);
+    for (const nombre of TABLAS_CAJA) {
+        if (Array.isArray(plan.tablas[nombre]) && db[nombre]) tablas.push(db[nombre]);
+    }
 
     await runWithDiskSyncPaused(async () => {
         await db.transaction('rw',
             tablas,
             async () => {
                 const extractedEmbeddings = [];
-                if (data.products) {
+                if (traeProductos) {
                     await db.products.clear();
 
                     let maxShort = 0;
                     const usedShortCodes = new Set();
-                    for (const p of data.products) {
+                    for (const p of plan.tablas.products) {
                         const n = parseInt(p.shortCode, 10);
                         if (!isNaN(n)) {
                             usedShortCodes.add(n);
@@ -802,7 +816,7 @@ export async function importDatabase(backupObj) {
                     let shortCodeCounter = maxShort + 1;
 
                     const preparedProducts = [];
-                    for (const product of data.products) {
+                    for (const product of plan.tablas.products) {
                         const prodData = { ...product };
                         if (!prodData.globalId) {
                             prodData.globalId = crypto.randomUUID();
@@ -832,34 +846,51 @@ export async function importDatabase(backupObj) {
                         await db.products.bulkPut(preparedProducts.slice(i, i + 250));
                     }
                 }
-                if (db.productEmbeddings) {
+                // Solo se toca la tabla de vectores si el archivo trae productos
+                // (catálogo nuevo) o trae la tabla explícita. Un archivo sin
+                // ninguna de las dos no borra los vectores de esta máquina.
+                if (db.productEmbeddings && (traeProductos || traeEmbeddings)) {
                     await db.productEmbeddings.clear();
-                    const incomingEmb = Array.isArray(data.productEmbeddings) ? data.productEmbeddings : [];
+                    const incomingEmb = traeEmbeddings ? plan.tablas.productEmbeddings : [];
                     const mergedEmb = [...incomingEmb, ...extractedEmbeddings];
                     for (let i = 0; i < mergedEmb.length; i += 250) {
                         await db.productEmbeddings.bulkPut(mergedEmb.slice(i, i + 250));
                     }
                 }
-                if (data.kardex) { await db.kardex.clear(); await db.kardex.bulkAdd(data.kardex); }
-                if (data.sales) { await db.sales.clear(); await db.sales.bulkAdd(data.sales); }
-                if (data.expenseCategories) { await db.expenseCategories.clear(); await db.expenseCategories.bulkAdd(data.expenseCategories); }
-                if (data.expenses) { await db.expenses.clear(); await db.expenses.bulkAdd(data.expenses); }
-                if (data.settings) { await db.settings.clear(); await db.settings.bulkPut(data.settings); }
-                if (data.reservations) { await db.reservations.clear(); await db.reservations.bulkAdd(data.reservations); }
-                if (data.reservationPayments) { await db.reservationPayments.clear(); await db.reservationPayments.bulkAdd(data.reservationPayments); }
-                if (data.categories) { await db.categories.clear(); await db.categories.bulkAdd(data.categories); }
-                if (data.productNames) { await db.productNames.clear(); await db.productNames.bulkAdd(data.productNames); }
-                if (data.productFields) { await db.productFields.clear(); await db.productFields.bulkAdd(data.productFields); }
-                if (data.barcodes) { await db.barcodes.clear(); await db.barcodes.bulkAdd(data.barcodes); }
-                if (data.brands) { await db.brands.clear(); await db.brands.bulkAdd(data.brands); }
-                if (data.colors) { await db.colors.clear(); await db.colors.bulkAdd(data.colors); }
-                if (data.branches && db.branches) { await db.branches.clear(); await db.branches.bulkAdd(data.branches); }
-                if (data.branchTransfers && db.branchTransfers) { await db.branchTransfers.clear(); await db.branchTransfers.bulkAdd(data.branchTransfers); }
-                if (data.webEventos) { await db.webEventos.clear(); await db.webEventos.bulkPut(data.webEventos); }
+                const escribir = async (nombre, escribirFilas) => {
+                    if (!Array.isArray(plan.tablas[nombre]) || !db[nombre]) return;
+                    await escribirFilas(plan.tablas[nombre]);
+                };
+                await escribir('kardex', async (filas) => { await db.kardex.clear(); if (filas.length) await db.kardex.bulkAdd(filas); });
+                await escribir('sales', async (filas) => { await db.sales.clear(); if (filas.length) await db.sales.bulkAdd(filas); });
+                await escribir('expenseCategories', async (filas) => { await db.expenseCategories.clear(); if (filas.length) await db.expenseCategories.bulkAdd(filas); });
+                await escribir('expenses', async (filas) => { await db.expenses.clear(); if (filas.length) await db.expenses.bulkAdd(filas); });
+                await escribir('settings', async (filas) => { await db.settings.clear(); if (filas.length) await db.settings.bulkPut(filas); });
+                await escribir('reservations', async (filas) => { await db.reservations.clear(); if (filas.length) await db.reservations.bulkAdd(filas); });
+                await escribir('reservationPayments', async (filas) => { await db.reservationPayments.clear(); if (filas.length) await db.reservationPayments.bulkAdd(filas); });
+                await escribir('categories', async (filas) => { await db.categories.clear(); if (filas.length) await db.categories.bulkAdd(filas); });
+                await escribir('productNames', async (filas) => { await db.productNames.clear(); if (filas.length) await db.productNames.bulkAdd(filas); });
+                await escribir('productFields', async (filas) => { await db.productFields.clear(); if (filas.length) await db.productFields.bulkAdd(filas); });
+                await escribir('barcodes', async (filas) => { await db.barcodes.clear(); if (filas.length) await db.barcodes.bulkAdd(filas); });
+                await escribir('brands', async (filas) => { await db.brands.clear(); if (filas.length) await db.brands.bulkAdd(filas); });
+                await escribir('colors', async (filas) => { await db.colors.clear(); if (filas.length) await db.colors.bulkAdd(filas); });
+                await escribir('branches', async (filas) => { await db.branches.clear(); if (filas.length) await db.branches.bulkAdd(filas); });
+                await escribir('branchTransfers', async (filas) => { await db.branchTransfers.clear(); if (filas.length) await db.branchTransfers.bulkAdd(filas); });
+                await escribir('webEventos', async (filas) => { await db.webEventos.clear(); if (filas.length) await db.webEventos.bulkPut(filas); });
+                if (reemplazarUsuarios) {
+                    await db.users.clear();
+                    if (plan.tablas.users.length) await db.users.bulkAdd(plan.tablas.users);
+                }
+                for (const nombre of TABLAS_CAJA) {
+                    if (!Array.isArray(plan.tablas[nombre]) || !db[nombre]) continue;
+                    await db[nombre].clear();
+                    if (plan.tablas[nombre].length) await db[nombre].bulkAdd(plan.tablas[nombre]);
+                }
             }
         );
     });
     await forcePushBrowserToDisk(db).catch(() => {});
+    return { avisos: plan.avisos, usuariosOmitidos: plan.usuariosOmitidos };
 }
 
 /**

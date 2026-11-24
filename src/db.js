@@ -39,6 +39,7 @@ export {
     ensureBranchExists,
     registerBranchTransferInProduct,
     exportDatabase,
+    exportDatabaseSinSecretos,
     importDatabase,
     resetForProduction,
     deleteEntireDatabase,

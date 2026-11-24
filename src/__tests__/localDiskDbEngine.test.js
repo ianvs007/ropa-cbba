@@ -357,12 +357,14 @@ describe('Middleware HTTP de Base de Datos SQLite + Imágenes en Disco', () => {
     });
 
     it('importa un backup JSON por streaming directo preservando contraseñas existentes cuando vienen con ***', async () => {
-        // Primero guardar un admin con hash real
+        // Admin con hash real, una apertura y el token. El archivo v10 no trae caja ni settings.
         await invokeMiddleware('POST', '/__local_db/sync', {
             mode: 'full',
             clientId: 'setup',
             tables: {
                 users: [{ id: 1, username: 'admin', role: 'admin', password: 'salt123:realhash456' }],
+                cashOpenings: [{ id: 7, date: '2026-11-22', userId: 1, openingAmount: 100 }],
+                settings: [{ key: 'syncToken', value: 'token-vivo' }, { key: 'storeName', value: 'Vieja' }],
             },
         });
 
@@ -382,9 +384,53 @@ describe('Middleware HTTP de Base de Datos SQLite + Imágenes en Disco', () => {
         expect(impRes.statusCode).toBe(200);
         expect(impRes.data.imagesCount).toBe(1);
 
-        const snap = await invokeMiddleware('GET', '/__local_db/snapshot?tables=products,users');
+        const snap = await invokeMiddleware('GET', '/__local_db/snapshot?tables=products,users,cashOpenings,settings');
         expect(snap.data.tables.products[0].photo).toMatch(/^\/__local_media\//);
         expect(snap.data.tables.users.find(u => u.username === 'admin').password).toBe('salt123:realhash456');
-        expect(snap.data.tables.users.find(u => u.username === 'vendedora1').password).toBe('123456');
+        // No se inventa 123456 para quien solo venía enmascarado.
+        expect(snap.data.tables.users.find(u => u.username === 'vendedora1')).toBeUndefined();
+        expect(snap.data.tables.cashOpenings).toEqual([
+            expect.objectContaining({ id: 7, openingAmount: 100 }),
+        ]);
+        expect(snap.data.tables.settings.find(s => s.key === 'syncToken').value).toBe('token-vivo');
+        expect(snap.data.tables.settings.find(s => s.key === 'storeName').value).toBe('Vieja');
+    });
+
+    it('un backup v12 escribe la caja y la copia sin secretos no borra el token', async () => {
+        await invokeMiddleware('POST', '/__local_db/sync', {
+            mode: 'full',
+            clientId: 'setup',
+            tables: {
+                users: [{ id: 1, username: 'admin', role: 'admin', password: 'salt123:realhash456' }],
+                settings: [{ key: 'syncToken', value: 'token-vivo' }, { key: 'storeName', value: 'Vieja' }],
+                cashOpenings: [{ id: 3, openingAmount: 40 }],
+            },
+        });
+
+        const backupPayload = JSON.stringify({
+            version: 12,
+            sinSecretos: true,
+            data: {
+                products: [{ id: 2, name: 'BLUSA', price: 80, stock: 1, shortCode: '00002' }],
+                productEmbeddings: [],
+                users: [{ id: 1, username: 'admin', role: 'admin', password: '***', claveOmitida: true }],
+                settings: [{ key: 'storeName', value: 'Tienda CBBA' }],
+                cashOpenings: [{ id: 1, date: '2026-11-24', userId: 1, openingAmount: 100 }],
+                cashClosures: [{ id: 4, date: '2026-11-24', userId: 1, expectedCash: 150 }],
+                cashClosureHistory: [],
+                securityLogs: [],
+            },
+        });
+
+        const impRes = await invokeMiddleware('POST', '/__local_db/import-backup', backupPayload);
+        expect(impRes.statusCode).toBe(200);
+
+        const snap = await invokeMiddleware('GET', '/__local_db/snapshot?tables=users,settings,cashOpenings,cashClosures,products');
+        expect(snap.data.tables.users.find(u => u.username === 'admin').password).toBe('salt123:realhash456');
+        expect(snap.data.tables.settings.find(s => s.key === 'syncToken').value).toBe('token-vivo');
+        expect(snap.data.tables.settings.find(s => s.key === 'storeName').value).toBe('Tienda CBBA');
+        expect(snap.data.tables.cashOpenings[0].openingAmount).toBe(100);
+        expect(snap.data.tables.cashClosures[0].expectedCash).toBe(150);
+        expect(snap.data.tables.products[0].name).toBe('BLUSA');
     });
 });
