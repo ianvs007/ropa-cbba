@@ -186,6 +186,9 @@ describe('Middleware HTTP de Base de Datos SQLite + Imágenes en Disco', () => {
             const req = new EventEmitter();
             req.method = method;
             req.url = url;
+            // Simula la PC central: loopback + Host local, que opera sin token.
+            req.headers = { host: 'localhost' };
+            req.socket = { remoteAddress: '127.0.0.1' };
 
             const headers = {};
             const res = {

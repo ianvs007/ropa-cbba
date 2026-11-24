@@ -634,3 +634,24 @@ autoridad; el botón "Vaciar nube" era TEMPORAL y se RETIRÓ el 11/09 15:40
       `node.exe`, respalda `pos.sqlite`, ejecuta `git pull --ff-only origin main`,
       corre `npm ci` solo si cambió `package-lock.json` y relanza el servicio).
     - **299/299 tests** en verde + `dist/` actualizado y verificado en producción.
+
+### ✅ Seguridad de la BD SQLite en red (24/11/2026)
+
+27. **Reaplicación del PR #4 sobre el motor SQLite** (no se fusiona el #4: estaba escrito
+    contra `pos-db.json` y choca con `localDiskDbPlugin` / `sqliteStore` / `diskSync`):
+    - `/__local_db/*` y `POST /__local_media/upload` exigen token a cualquier PC que no sea
+      la central (loopback **y** `Host` local). `GET /__local_media/` sigue público para
+      que el `<img>` cargue la foto. `status` y `backup-now` no publican rutas del disco
+      a clientes remotos. Token en `datos-pos/.local-db-token` o `POS_LOCAL_DB_TOKEN`.
+      `POS_HOST=127.0.0.1` deja de escuchar en la red. Tope 256 MB en el sync y 1 GB en
+      `import-backup` (el JSON histórico de ~300 MB).
+    - Producción arranca con `npm run start` (`vite preview` de `dist/`), no con
+      `npm run dev`. Los tres scripts de inicio generan `dist/` si falta.
+    - `admin123` / `cajera123` se siembran hasheadas con `mustChangePassword`. Login
+      obliga a cambiarlas (también si una BD vieja entra con una clave de fábrica).
+      `verifyPassword` ya no acepta texto plano; `migrarContrasenasLegacy` las hashea
+      al abrir y otra vez después de bajar SQLite.
+    - Borrar todo, limpiar para producción y restaurar backup piden la contraseña del
+      admin en sesión (`confirmarContrasenaAdmin`).
+    - Guía: `docs/SEGURIDAD.md`. `xlsx` sigue sin parche en npm y solo se usa para
+      escribir (`xlsxSoloEscritura.test.js`).

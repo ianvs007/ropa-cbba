@@ -16,6 +16,7 @@ export { db } from './db/schema';
 
 // Semillas (efecto secundario: registra db.on('ready'))
 import './db/seed';
+export { inicializacionUsuarios } from './db/seed';
 
 // Helpers públicos
 export {
@@ -69,5 +70,8 @@ export {
     uploadProductImageToDisk,
     importBackupFileViaServer,
     runWithDiskSyncPaused,
+    getDiskToken,
+    setDiskToken,
+    fetchLocalDiskToken,
 } from './db/diskSync';
 

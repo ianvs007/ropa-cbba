@@ -11,13 +11,26 @@ import {
     triggerDiskBackupNow,
     subscribeDiskSyncStatus,
     importBackupFileViaServer,
+    getDiskToken,
+    setDiskToken,
+    fetchLocalDiskToken,
+    db,
 } from '../db';
-import { Database, Download, Upload, AlertTriangle, CheckCircle, X, Trash2, HardDrive, RefreshCw, Save } from 'lucide-react';
+import { useUser } from '../contexts/UserContext';
+import { confirmarContrasenaAdmin } from '../utils/adminAuth';
+import AdminPasswordField from './AdminPasswordField';
+import { Database, Download, Upload, AlertTriangle, CheckCircle, X, Trash2, HardDrive, RefreshCw, Save, KeyRound } from 'lucide-react';
 
 /**
  * Backup — Copias de seguridad: exportar e importar toda la base de datos
  */
 export default function Backup() {
+    const { user } = useUser();
+    const [adminPass, setAdminPass] = React.useState('');
+    const [adminError, setAdminError] = React.useState('');
+    const [localToken, setLocalToken] = React.useState(null);
+    const [tokenInput, setTokenInput] = React.useState('');
+    const [showLocalToken, setShowLocalToken] = React.useState(false);
     const [loading, setLoading] = React.useState(false);
     const [msg, setMsg] = React.useState(null);
     const [confirmImport, setConfirmImport] = React.useState(null);
@@ -32,8 +45,23 @@ export default function Backup() {
     React.useEffect(() => {
         const unsub = subscribeDiskSyncStatus((st) => setDiskStatus(st));
         getDiskDbStatus();
+        fetchLocalDiskToken().then(setLocalToken);
         return () => unsub();
     }, []);
+
+    const limpiarConfirmacionAdmin = () => { setAdminPass(''); setAdminError(''); };
+
+    // Re-autentica al admin contra su registro actual en la BD antes de una acción destructiva.
+    const verificarAdmin = async () => {
+        const usuarioBd = user?.id != null ? await db.users.get(user.id) : null;
+        const resultado = await confirmarContrasenaAdmin(usuarioBd, adminPass);
+        setAdminError(resultado.ok ? '' : resultado.error);
+        return resultado.ok;
+    };
+
+    const handleGuardarToken = () => {
+        if (setDiskToken(tokenInput)) window.location.reload();
+    };
 
     const handleDiskBackupNow = async () => {
         setLoading(true);
@@ -155,8 +183,10 @@ export default function Backup() {
         if (!confirmImport) return;
         setLoading(true);
         try {
+            if (!(await verificarAdmin())) return;
             if (diskStatus?.connected && pendingFile) {
                 const res = await importBackupFileViaServer(pendingFile);
+                limpiarConfirmacionAdmin();
                 setConfirmImport(null);
                 setPendingFile(null);
                 showMsg(
@@ -165,6 +195,7 @@ export default function Backup() {
                 );
             } else {
                 const objToImport = confirmImport;
+                limpiarConfirmacionAdmin();
                 setConfirmImport(null);
                 setPendingFile(null);
                 const resultado = await importDatabase(objToImport);
@@ -182,7 +213,9 @@ export default function Backup() {
     const handleResetConfirm = async () => {
         setLoading(true);
         try {
+            if (!(await verificarAdmin())) return;
             await resetForProduction();
+            limpiarConfirmacionAdmin();
             setConfirmReset(false);
             showMsg('success', '✅ Sistema limpiado para producción. Recarga la página para aplicar los cambios.');
         } catch (err) {
@@ -196,6 +229,10 @@ export default function Backup() {
     const handleWipeConfirm = async () => {
         setLoading(true);
         try {
+            if (!(await verificarAdmin())) {
+                setLoading(false);
+                return;
+            }
             await deleteEntireDatabase();
         } catch (err) {
             showMsg('error', `Error al borrar: ${err.message}`);
@@ -221,7 +258,7 @@ export default function Backup() {
                             <p className="text-red-500 font-bold text-sm tracking-widest uppercase">BORRADO IRREVERSIBLE</p>
                         </div>
                     </div>
-                    <button onClick={() => setConfirmReset(false)} 
+                    <button onClick={() => { setConfirmReset(false); limpiarConfirmacionAdmin(); }} 
                         className="w-12 h-12 bg-pink-50 text-pink-400 rounded-2xl flex items-center justify-center hover:bg-pink-100 transition-all">
                         <X size={24} />
                     </button>
@@ -264,19 +301,24 @@ export default function Backup() {
                     </div>
                 </div>
 
-                <div className="bg-red-50 border border-red-100 rounded-[2rem] p-6 text-center mb-12">
+                <div className="bg-red-50 border border-red-100 rounded-[2rem] p-6 text-center mb-6">
                     <p className="text-red-600 font-black text-xs uppercase tracking-widest leading-loose">
                         ⚠️ ESTA ACCIÓN NO SE PUEDE DESHACER. Asegúrate de haber exportado un backup antes de continuar.
                     </p>
                 </div>
 
+                <div className="mb-12">
+                    <AdminPasswordField id="backup-reset-password" value={adminPass}
+                        onChange={v => { setAdminPass(v); setAdminError(''); }} error={adminError} disabled={loading} />
+                </div>
+
                 <div className="fixed bottom-8 left-1/2 -translate-x-1/2 w-full max-w-lg px-6 z-50">
                     <div className="bg-white/90 backdrop-blur-2xl border-2 border-red-100 p-4 rounded-[2.5rem] shadow-2xl flex gap-4">
-                        <button onClick={() => setConfirmReset(false)} 
+                        <button onClick={() => { setConfirmReset(false); limpiarConfirmacionAdmin(); }} 
                             className="px-8 py-5 border-2 border-pink-100 text-pink-400 font-black rounded-3xl text-xs uppercase tracking-widest hover:bg-pink-50 transition-all">
                             CANCELAR
                         </button>
-                        <button onClick={handleResetConfirm} disabled={loading}
+                        <button onClick={handleResetConfirm} disabled={loading || !adminPass}
                             className="flex-1 bg-gradient-to-r from-red-600 to-rose-600 text-white font-black py-5 rounded-3xl text-sm shadow-xl uppercase tracking-widest hover:scale-[1.02] active:scale-95 transition-all">
                             {loading ? 'LIMPIANDO...' : '🗑️ CONFIRMAR LIMPIEZA'}
                         </button>
@@ -300,7 +342,7 @@ export default function Backup() {
                             <p className="text-blue-500 font-bold text-sm tracking-widest uppercase">REEMPLAZO DE DATOS</p>
                         </div>
                     </div>
-                    <button onClick={() => { setConfirmImport(null); setPendingFile(null); }} 
+                    <button onClick={() => { setConfirmImport(null); setPendingFile(null); limpiarConfirmacionAdmin(); }} 
                         className="w-12 h-12 bg-pink-50 text-pink-400 rounded-2xl flex items-center justify-center hover:bg-pink-100 transition-all">
                         <X size={24} />
                     </button>
@@ -347,20 +389,25 @@ export default function Backup() {
                     )}
                 </div>
 
-                <div className="bg-red-50 border border-red-100 rounded-[2rem] p-6 text-center mb-12">
+                <div className="bg-red-50 border border-red-100 rounded-[2rem] p-6 text-center mb-6">
                     <p className="text-red-600 font-black text-xs uppercase tracking-widest leading-loose">
                         ⚠️ ATENCIÓN: Esta operación borrará todos los datos actuales y los reemplazará por los del archivo.
                     </p>
                 </div>
 
+                <div className="mb-12">
+                    <AdminPasswordField id="backup-import-password" value={adminPass}
+                        onChange={v => { setAdminPass(v); setAdminError(''); }} error={adminError} disabled={loading} />
+                </div>
+
                 {/* Footer Flotante Acciones */}
                 <div className="fixed bottom-8 left-1/2 -translate-x-1/2 w-full max-w-lg px-6 z-50">
                     <div className="bg-white/90 backdrop-blur-2xl border-2 border-pink-100 p-4 rounded-[2.5rem] shadow-2xl flex gap-4">
-                        <button onClick={() => { setConfirmImport(null); setPendingFile(null); }} 
+                        <button onClick={() => { setConfirmImport(null); setPendingFile(null); limpiarConfirmacionAdmin(); }} 
                             className="px-8 py-5 border-2 border-pink-100 text-pink-400 font-black rounded-3xl text-xs uppercase tracking-widest hover:bg-pink-50 transition-all">
                             CANCELAR
                         </button>
-                        <button onClick={handleImportConfirm} disabled={loading}
+                        <button onClick={handleImportConfirm} disabled={loading || !adminPass}
                             className="flex-1 bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-black py-5 rounded-3xl text-sm shadow-xl uppercase tracking-widest hover:scale-[1.02] active:scale-95 transition-all">
                             {loading ? 'RESTAURANDO...' : '✓ CONFIRMAR RESTAURACIÓN'}
                         </button>
@@ -436,6 +483,59 @@ export default function Backup() {
                                     </div>
                                 )}
                             </div>
+                        )}
+
+                        {diskStatus?.authRequired && (
+                            <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 mb-4 text-xs text-amber-900 space-y-2">
+                                <p className="font-bold flex items-center gap-1.5">
+                                    <KeyRound size={14} /> La PC central pide un token de acceso
+                                </p>
+                                <p>
+                                    Copia el token desde la pantalla de Copias de Seguridad de la PC central y pégalo aquí.
+                                    Hasta entonces esta PC queda en modo solo navegador.
+                                </p>
+                                <div className="flex gap-2">
+                                    <input
+                                        id="backup-token-remoto"
+                                        type="password"
+                                        value={tokenInput}
+                                        onChange={e => setTokenInput(e.target.value)}
+                                        placeholder="Token de acceso"
+                                        className="flex-1 border border-amber-300 rounded-lg px-3 py-2 bg-white"
+                                    />
+                                    <button type="button" onClick={handleGuardarToken} disabled={!tokenInput.trim()}
+                                        className="bg-amber-600 hover:bg-amber-700 text-white font-bold px-3 rounded-lg disabled:opacity-50">
+                                        Guardar y reconectar
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {localToken && (
+                            <div className="bg-white/90 border border-emerald-200 rounded-xl p-3 mb-4 text-xs text-pink-800 space-y-1.5">
+                                <p className="font-bold flex items-center gap-1.5">
+                                    <KeyRound size={14} /> Token para conectar otras PCs de la red
+                                </p>
+                                <p>
+                                    Esta PC (central) accede a SQLite sin token. Las otras PCs deben ingresar este valor
+                                    al abrir Copias de Seguridad. No lo compartas fuera de la tienda.
+                                </p>
+                                <div className="flex items-center gap-2">
+                                    <code className="bg-emerald-50 px-1.5 py-0.5 rounded text-[11px] break-all flex-1">
+                                        {showLocalToken ? localToken : '••••••••••••••••••••••••'}
+                                    </code>
+                                    <button type="button" onClick={() => setShowLocalToken(v => !v)}
+                                        className="text-emerald-800 font-bold underline">
+                                        {showLocalToken ? 'Ocultar' : 'Mostrar'}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {getDiskToken() && !diskStatus?.authRequired && (
+                            <p className="text-[11px] text-emerald-800 mb-3">
+                                Esta PC usa un token de acceso guardado para conectarse a la central.
+                            </p>
                         )}
 
                         <div className="flex flex-wrap gap-2">
@@ -581,7 +681,7 @@ export default function Backup() {
                         </div>
                         <button
                             id="backup-reset"
-                            onClick={() => setConfirmReset(true)}
+                            onClick={() => { limpiarConfirmacionAdmin(); setConfirmReset(true); }}
                             disabled={loading}
                             className="bg-red-600 hover:bg-red-700 text-white font-bold py-2.5 px-5 rounded-xl text-sm flex items-center gap-2 disabled:opacity-50 transition-all">
                             <Trash2 size={18} />
@@ -613,25 +713,29 @@ export default function Backup() {
                         </div>
                         {!confirmWipe ? (
                             <button
-                                onClick={() => setConfirmWipe(true)}
+                                onClick={() => { limpiarConfirmacionAdmin(); setConfirmWipe(true); }}
                                 disabled={loading}
                                 className="bg-red-700 hover:bg-red-800 text-white font-bold py-2.5 px-5 rounded-xl text-sm flex items-center gap-2 disabled:opacity-50 transition-all">
                                 <Trash2 size={18} />
                                 Borrar Todo
                             </button>
                         ) : (
-                            <div className="flex items-center gap-3">
+                            <div className="space-y-3">
+                                <AdminPasswordField id="backup-wipe-password" value={adminPass}
+                                    onChange={v => { setAdminPass(v); setAdminError(''); }} error={adminError} disabled={loading} />
+                                <div className="flex items-center gap-3">
                                 <button
                                     onClick={handleWipeConfirm}
-                                    disabled={loading}
+                                    disabled={loading || !adminPass}
                                     className="bg-red-800 hover:bg-red-900 text-white font-black py-3 px-6 rounded-xl text-sm flex items-center gap-2 disabled:opacity-50 transition-all animate-pulse">
                                     {loading ? 'BORRANDO...' : '⚠️ SÍ, BORRAR TODO'}
                                 </button>
                                 <button
-                                    onClick={() => setConfirmWipe(false)}
+                                    onClick={() => { setConfirmWipe(false); limpiarConfirmacionAdmin(); }}
                                     className="border-2 border-pink-200 text-pink-400 font-bold py-3 px-6 rounded-xl text-sm hover:bg-pink-50 transition-all">
                                     Cancelar
                                 </button>
+                                </div>
                             </div>
                         )}
                     </div>

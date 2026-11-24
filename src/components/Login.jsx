@@ -1,8 +1,10 @@
 import React from 'react';
-import { db } from '../db';
+import { db, inicializacionUsuarios } from '../db';
 import { ShoppingBag, Lock, Eye, EyeOff, AlertCircle } from 'lucide-react';
 import { verifyPassword } from '../utils/crypto';
 import { useUser } from '../contexts/UserContext';
+import { requiereCambioContrasena } from '../utils/passwordPolicy';
+import ForcePasswordChange from './ForcePasswordChange';
 
 /**
  * Login — Pantalla de inicio de sesión
@@ -15,12 +17,18 @@ export default function Login() {
     const [showPass, setShowPass] = React.useState(false);
     const [error, setError] = React.useState('');
     const [loading, setLoading] = React.useState(false);
+    const [cambioPendiente, setCambioPendiente] = React.useState(null);
+
+    const iniciarSesion = (user) => login({
+        id: user.id, username: user.username, name: user.name, role: user.role, permissions: user.permissions || {},
+    });
 
     const handleSubmit = async (e) => {
         e.preventDefault();
         setError('');
         setLoading(true);
         try {
+            await inicializacionUsuarios;
             const user = await db.users
                 .where('username').equals(username.trim().toLowerCase())
                 .first();
@@ -31,13 +39,28 @@ export default function Login() {
                 setLoading(false);
                 return;
             }
-            login({ id: user.id, username: user.username, name: user.name, role: user.role, permissions: user.permissions || {} });
-        } catch (err) {
+            if (requiereCambioContrasena(user, password)) {
+                setCambioPendiente({ user, actual: password });
+                return;
+            }
+            iniciarSesion(user);
+        } catch {
             setError('Error de conexión con la base de datos');
         } finally {
             setLoading(false);
         }
     };
+
+    if (cambioPendiente) {
+        return (
+            <ForcePasswordChange
+                user={cambioPendiente.user}
+                actual={cambioPendiente.actual}
+                onDone={() => iniciarSesion(cambioPendiente.user)}
+                onCancel={() => { setCambioPendiente(null); setPassword(''); }}
+            />
+        );
+    }
 
     return (
         <div className="min-h-screen flex items-center justify-center"

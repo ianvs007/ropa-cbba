@@ -29,7 +29,8 @@ Para ver el avance del sistema, consulta [docs/avance.md](docs/avance.md).
 
 ## Scripts disponibles
 
-- `npm run dev` – Inicia el servidor de desarrollo.
+- `npm run dev` – Inicia el servidor de desarrollo (solo para desarrollar).
+- `npm run start` – Sirve el build de `dist/` (`vite preview`, puerto 3001): es lo que usa producción.
 - `npm run build` – Compila la aplicación para producción.
 - `npm run lint` – Ejecuta ESLint.
 - `npm run test` – Ejecuta las pruebas con Vitest.
@@ -39,8 +40,13 @@ Para ver el avance del sistema, consulta [docs/avance.md](docs/avance.md).
 
 ```bash
 npm install
-npm run dev
+npm run build   # genera dist/ (ya viene versionado)
+npm run start   # produccion: http://localhost:3001
 ```
+
+En el primer ingreso (`admin` / `admin123`) el sistema obliga a elegir una contraseña nueva.
+Para configurar el token de la BD SQLite en red y demás medidas, ver
+[docs/SEGURIDAD.md](docs/SEGURIDAD.md).
 
 ## Licencia
 
