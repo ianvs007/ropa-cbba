@@ -91,9 +91,10 @@ Consecuencias operativas:
   Al abrir la BD, `migrarContrasenasLegacy` convierte a hash cualquier contraseña en texto
   plano (también las que contenían `:`). Login espera a esa migración antes de verificar.
   La migración corre otra vez después de bajar SQLite, por si el disco todavía traía texto plano.
-- Si un backup JSON no trae usuarios, SQLite siembra las mismas cuentas de fábrica marcadas
-  para cambio obligatorio. Si trae `password: '***'` y no hay hash previo, asigna una clave
-  de fábrica y también marca el cambio.
+- Una BD vacía nace por `seed.js`, con esas cuentas hasheadas y `mustChangePassword`.
+  Un backup JSON con `password: '***'` (o una copia sin secretos) conserva el hash que ya
+  está en esta máquina. Si no hay hash previo, ese usuario no se restaura: no se le inventa
+  `admin123` ni `123456`.
 
 ## 4. Acciones destructivas en Copias de Seguridad
 
@@ -101,6 +102,10 @@ Consecuencias operativas:
 contraseña del administrador en sesión. Se verifica contra el registro actual en la BD
 (`confirmarContrasenaAdmin`): un usuario desactivado o que ya no sea admin no puede confirmar.
 El respaldo previo automático en disco (`.sqlite`) se mantiene.
+
+La tarjeta **Exportar Backup** no pide esa contraseña. El archivo completo guarda el hash real
+y puede incluir el token de sincronización. **Copia sin secretos** omite hashes y `syncToken`
+y lo avisa dentro del archivo; la caja y los embeddings van en las dos copias.
 
 ## 5. Dependencias
 

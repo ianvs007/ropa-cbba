@@ -635,10 +635,11 @@ autoridad; el botón "Vaciar nube" era TEMPORAL y se RETIRÓ el 11/09 15:40
       corre `npm ci` solo si cambió `package-lock.json` y relanza el servicio).
     - **299/299 tests** en verde + `dist/` actualizado y verificado en producción.
 
-### ✅ Seguridad de la BD SQLite en red (24/11/2026)
+### ✅ Seguridad de la BD SQLite en red (24/11/2026, en main vía PR #6)
 
-27. **Reaplicación del PR #4 sobre el motor SQLite** (no se fusiona el #4: estaba escrito
-    contra `pos-db.json` y choca con `localDiskDbPlugin` / `sqliteStore` / `diskSync`):
+27. **Reaplicación del PR #4 sobre el motor SQLite** (el #4 no se fusiona: estaba escrito
+    contra `pos-db.json` y choca con `localDiskDbPlugin` / `sqliteStore` / `diskSync`).
+    El #6 se rebasó sobre el main que ya tenía el #7:
     - `/__local_db/*` y `POST /__local_media/upload` exigen token a cualquier PC que no sea
       la central (loopback **y** `Host` local). `GET /__local_media/` sigue público para
       que el `<img>` cargue la foto. `status` y `backup-now` no publican rutas del disco
@@ -655,3 +656,20 @@ autoridad; el botón "Vaciar nube" era TEMPORAL y se RETIRÓ el 11/09 15:40
       admin en sesión (`confirmarContrasenaAdmin`).
     - Guía: `docs/SEGURIDAD.md`. `xlsx` sigue sin parche en npm y solo se usa para
       escribir (`xlsxSoloEscritura.test.js`).
+
+### ✅ Cobro en efectivo y backup de caja (24/11/2026, en main vía PR #7)
+
+28. **PR #7** (`d4c07e6`) entró primero; el #6 se rebasó encima:
+    - El efectivo exige un monto escrito que cubra el total.
+    - El backup v12 incluye caja, embeddings y el hash real. La copia sin secretos
+      omite hashes y `syncToken`. La tarjeta Exportar quedó como en el #7. La
+      contraseña de admin del #6 aplica solo a borrar, limpiar y restaurar.
+    - Conflicto del rebase: `src/server/sqliteStore.js`. Se conservó
+      `componerTablasRestauracion` del #7. El #6 marcaba `mustChangePassword` en un
+      camino viejo que inventaba `admin123` para claves `***`; ese camino ya no
+      existe. `Backup.jsx` se unió solo, sin reescribir la tarjeta Exportar.
+    - **389/389 tests** + `npm run build` OK. `dist/` se regeneró después del rebase:
+      el build que traía el #6 no incluía el cobro ni la copia sin secretos.
+    - Las tres PCs actualizan con `ACTUALIZAR_SISTEMA.bat` (cambian
+      `package-lock.json`, los scripts de arranque y `dist/`). Con el POS cerrado,
+      exportar un backup antes.
