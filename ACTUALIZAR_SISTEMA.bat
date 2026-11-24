@@ -45,12 +45,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM 5. Ejecutar npm ci SOLO si cambiaron las dependencias
+REM 5. Ejecutar npm ci si cambio el lock O si faltan node_modules (clon fresco)
 set "NEW_LOCK="
 for /f "tokens=*" %%h in ('git rev-parse HEAD:package-lock.json 2^>nul') do set "NEW_LOCK=%%h"
-if not "!OLD_LOCK!"=="!NEW_LOCK!" (
+set "NEED_CI=0"
+if not "!OLD_LOCK!"=="!NEW_LOCK!" set "NEED_CI=1"
+if not exist "node_modules\vite\package.json" set "NEED_CI=1"
+if "!NEED_CI!"=="1" (
     echo.
-    echo [4/5] Se detectaron nuevas dependencias, ejecutando npm ci...
+    echo [4/5] Instalando dependencias con npm ci...
     call npm.cmd ci
     if errorlevel 1 (
         color 0c

@@ -65,17 +65,21 @@ Firewall de Windows que limite el puerto 3001 a la subred de la tienda.
 
 `iniciar-servicio-silencioso.bat`, `iniciar-servicio.bat` e `iniciar-servicio.ps1` ya no
 ejecutan `npm run dev`: sirven el build de `dist/` con **`npm run start`** (`vite preview`,
-mismo puerto 3001 y el mismo plugin de SQLite). Si `dist/index.html` no existe, el script lo
-genera antes con `npm run build`.
+mismo puerto 3001 y el mismo plugin de SQLite). Comprueban Node, ejecutan `npm ci` si faltan
+`node_modules`, generan `dist/` si falta, y el bat silencioso escribe
+`datos-pos\servidor.log` y espera a que `http://127.0.0.1:3001/` responda antes de abrir
+Chrome/Edge. Si el servidor no levanta, muestra un aviso (ya no falla en silencio).
 
 `ACTUALIZAR_SISTEMA.bat` sigue cerrando Node, copiando `pos.sqlite` y haciendo
-`git pull --ff-only`; al final llama al bat silencioso, que ahora arranca `npm run start`.
+`git pull --ff-only`; corre `npm ci` si cambió el lock **o** si faltan `node_modules`; al
+final llama al bat silencioso (`npm run start`).
 
 Consecuencias operativas:
 
 - **`dist/` es lo que corre.** Cualquier cambio de código llega a la tienda solo si se
   regeneró `dist/` (commit `build: regenerar dist ...`).
-- `npm run dev` queda solo para desarrollo.
+- `npm run dev` queda solo para desarrollo; en central y sucursal se usa el acceso directo
+  / `iniciar-servicio-silencioso.bat`.
 
 ## 3. Credenciales iniciales y contraseñas
 
