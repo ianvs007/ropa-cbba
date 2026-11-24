@@ -179,7 +179,7 @@ export default function ProductSearch({ currency, onAdd, scanFlash, onError }) {
                                        hover:bg-pink-50 transition-colors border-b border-pink-50 last:border-0 text-left">
                             <div className="flex items-center gap-3">
                                 {p.photo ? (
-                                    <img src={p.photo} alt={p.name} className="w-10 h-10 rounded-lg object-cover shrink-0 border border-pink-100" />
+                                    <img src={p.photo} alt={p.name} loading="lazy" decoding="async" className="w-10 h-10 rounded-lg object-cover shrink-0 border border-pink-100" />
                                 ) : (
                                     <div className="w-10 h-10 rounded-lg bg-pink-50 flex items-center justify-center shrink-0 border border-pink-100">
                                         <Package size={20} className="text-pink-300" />

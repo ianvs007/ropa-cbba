@@ -306,7 +306,7 @@ export default function ProductList() {
                                         {/* Miniatura de la foto del producto (56x56) */}
                                         {p.photo ? (
                                             <div className="w-14 h-14 rounded-lg border border-pink-100 overflow-hidden flex-shrink-0">
-                                                <img src={p.photo} alt={p.name} className="w-full h-full object-cover" />
+                                                <img src={p.photo} alt={p.name} loading="lazy" decoding="async" className="w-full h-full object-cover" />
                                             </div>
                                         ) : (
                                             <div className="w-14 h-14 rounded-lg border border-gray-200 bg-gray-100 flex flex-col items-center justify-center flex-shrink-0 text-gray-300">

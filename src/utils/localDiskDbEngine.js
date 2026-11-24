@@ -9,6 +9,7 @@
 
 export const POS_DB_TABLES = [
     'products',
+    'productEmbeddings',
     'kardex',
     'sales',
     'expenseCategories',
@@ -31,6 +32,27 @@ export const POS_DB_TABLES = [
     'cashOpenings',
     'webEventos',
 ];
+
+export const POS_TABLE_PK = {
+    settings: 'key',
+    productEmbeddings: 'productId',
+};
+
+/**
+ * Obtiene el nombre del campo clave primaria de una tabla del POS.
+ */
+export function obtenerCampoClaveTabla(tableName) {
+    return POS_TABLE_PK[tableName] || 'id';
+}
+
+/**
+ * Extrae el valor de clave primaria de una fila según su tabla.
+ */
+export function obtenerClavePrimariaFila(tableName, row) {
+    if (!row || typeof row !== 'object') return undefined;
+    const pkField = obtenerCampoClaveTabla(tableName);
+    return row[pkField];
+}
 
 /**
  * Calcula estadísticas resumidas de un conjunto de tablas.
@@ -102,7 +124,21 @@ export function decidirSincronizacionInicial({
         };
     }
 
-    // 3. Si el navegador actual nunca se había sincronizado con el disco (localLastSyncedRev === 0)
+    // 3. Si el navegador ya está sincronizado exactamente en la misma revisión de SQLite
+    //    y tiene datos locales consistentes, no volver a descargar ni reescribir IndexedDB:
+    if (
+        diskInitialized &&
+        diskRevision > 0 &&
+        localLastSyncedRev === diskRevision &&
+        (localHasData || !diskHasData)
+    ) {
+        return {
+            action: 'noop',
+            reason: 'El navegador ya se encuentra en la revisión actual de SQLite.',
+        };
+    }
+
+    // 4. Si el navegador actual nunca se había sincronizado con el disco (localLastSyncedRev === 0)
     //    pero tiene MÁS productos y ventas que el disco (caso de migración desde perfil antiguo):
     if (
         localLastSyncedRev === 0 &&
@@ -116,7 +152,7 @@ export function decidirSincronizacionInicial({
         };
     }
 
-    // 4. En cualquier otro caso, el disco es la fuente de la verdad para todos los navegadores:
+    // 5. En cualquier otro caso, el disco es la fuente de la verdad para todos los navegadores:
     return {
         action: 'pull_disk_to_local',
         reason: 'El disco local es la fuente de verdad compartida entre navegadores.',
@@ -124,7 +160,8 @@ export function decidirSincronizacionInicial({
 }
 
 /**
- * Aplica un parche parcial o reemplazo completo sobre el estado en memoria del servidor en disco.
+ * Aplica un parche parcial, operaciones por fila, reemplazo completo o borrado total
+ * sobre un estado en memoria (usado en pruebas unitarias puras).
  */
 export function aplicarCambioEstadoDisco(estadoActual, payload = {}) {
     const baseTables = {};
@@ -169,6 +206,46 @@ export function aplicarCambioEstadoDisco(estadoActual, payload = {}) {
             lastClientId: payload.clientId || null,
             tables: fullTables,
             updatedTables: [...POS_DB_TABLES],
+        };
+    }
+
+    if (mode === 'ops') {
+        const nextTables = { ...baseTables };
+        const touched = new Set();
+        const upserts = payload.upserts && typeof payload.upserts === 'object' ? payload.upserts : {};
+        const deletes = payload.deletes && typeof payload.deletes === 'object' ? payload.deletes : {};
+
+        for (const table of POS_DB_TABLES) {
+            const ups = Array.isArray(upserts[table]) ? upserts[table] : [];
+            const dels = Array.isArray(deletes[table]) ? deletes[table] : [];
+            if (ups.length === 0 && dels.length === 0) continue;
+
+            touched.add(table);
+            const delSet = new Set(dels.map(k => String(k)));
+            const byKey = new Map();
+            for (const row of nextTables[table]) {
+                const pk = obtenerClavePrimariaFila(table, row);
+                if (pk !== undefined && pk !== null && !delSet.has(String(pk))) {
+                    byKey.set(String(pk), row);
+                }
+            }
+            for (const row of ups) {
+                const pk = obtenerClavePrimariaFila(table, row);
+                if (pk !== undefined && pk !== null) {
+                    byKey.set(String(pk), row);
+                }
+            }
+            nextTables[table] = Array.from(byKey.values());
+        }
+
+        return {
+            version: 1,
+            initialized: true,
+            revision: nextRevision,
+            updatedAt: now,
+            lastClientId: payload.clientId || null,
+            tables: nextTables,
+            updatedTables: Array.from(touched),
         };
     }
 

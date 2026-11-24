@@ -228,6 +228,9 @@ export default function POS() {
 
                     const itemsWithCodes = cart.map(item => ({
                         ...item,
+                        photo: typeof item.photo === 'string' && item.photo.startsWith('data:image/')
+                            ? ''
+                            : (item.photo || ''),
                         unitCodes: unitCodesMap[item.productId] || [],
                     }));
 

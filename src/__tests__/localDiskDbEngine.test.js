@@ -13,6 +13,10 @@ import {
 } from '../utils/localDiskDbEngine';
 import { crearMiddlewareLocalDiskDb } from '../server/localDiskDbPlugin';
 
+// Imagen JPEG 1x1 mínima válida en Base64 para pruebas reales de disco
+const SAMPLE_JPEG_BYTES = Buffer.from('/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=', 'base64');
+const SAMPLE_DATA_URL = `data:image/jpeg;base64,${SAMPLE_JPEG_BYTES.toString('base64')}`;
+
 describe('Motor de Base de Datos en Disco Local (localDiskDbEngine)', () => {
     it('calcula estadísticas y detecta si existen datos operativos reales', () => {
         const tablasVacias = {
@@ -77,6 +81,21 @@ describe('Motor de Base de Datos en Disco Local (localDiskDbEngine)', () => {
         expect(res.action).toBe('push_local_to_disk');
     });
 
+    it('decide noop instantáneo cuando el navegador ya está en la misma revisión de SQLite', () => {
+        const res = decidirSincronizacionInicial({
+            diskInitialized: true,
+            diskRevision: 8,
+            diskTables: {
+                products: [{ id: 1, name: 'VESTIDO' }],
+            },
+            localTables: {
+                products: [{ id: 1, name: 'VESTIDO' }],
+            },
+            localLastSyncedRev: 8,
+        });
+        expect(res.action).toBe('noop');
+    });
+
     it('decide descargar del disco al navegador cuando otro navegador (ej. cajero en otro navegador) se conecta', () => {
         const res = decidirSincronizacionInicial({
             diskInitialized: true,
@@ -96,13 +115,14 @@ describe('Motor de Base de Datos en Disco Local (localDiskDbEngine)', () => {
         expect(res.action).toBe('pull_disk_to_local');
     });
 
-    it('aplica parches parciales, reemplazos completos y borrado total (wipe)', () => {
+    it('aplica parches parciales, operaciones por fila (ops), reemplazos completos y borrado total (wipe)', () => {
         const inicial = aplicarCambioEstadoDisco(null, {
             mode: 'full',
             clientId: 'tab-1',
             now: '2026-11-15T10:00:00.000Z',
             tables: {
                 products: [{ id: 1, name: 'FALDA', stock: 1 }],
+                settings: [{ key: 'storeName', value: 'Central' }],
                 branches: [{ id: 1, name: 'SUCURSAL 1' }],
             },
         });
@@ -111,23 +131,28 @@ describe('Motor de Base de Datos en Disco Local (localDiskDbEngine)', () => {
         expect(inicial.tables.products).toHaveLength(1);
         expect(inicial.tables.branches).toHaveLength(1);
 
-        const parchado = aplicarCambioEstadoDisco(inicial, {
-            mode: 'patch',
+        const incremental = aplicarCambioEstadoDisco(inicial, {
+            mode: 'ops',
             clientId: 'tab-2',
-            now: '2026-11-15T10:05:00.000Z',
-            tables: {
+            now: '2026-11-15T10:02:00.000Z',
+            upserts: {
                 products: [
-                    { id: 1, name: 'FALDA', stock: 1 },
+                    { id: 1, name: 'FALDA', stock: 0 },
                     { id: 2, name: 'ABRIGO', stock: 2 },
                 ],
+                settings: [{ key: 'storeName', value: 'Tienda Central' }],
+            },
+            deletes: {
+                branches: [1],
             },
         });
-        expect(parchado.revision).toBe(2);
-        expect(parchado.updatedTables).toEqual(['products']);
-        expect(parchado.tables.products).toHaveLength(2);
-        expect(parchado.tables.branches).toHaveLength(1);
+        expect(incremental.revision).toBe(2);
+        expect(incremental.tables.products).toHaveLength(2);
+        expect(incremental.tables.products.find(p => p.id === 1).stock).toBe(0);
+        expect(incremental.tables.settings[0].value).toBe('Tienda Central');
+        expect(incremental.tables.branches).toHaveLength(0);
 
-        const borrado = aplicarCambioEstadoDisco(parchado, {
+        const borrado = aplicarCambioEstadoDisco(incremental, {
             mode: 'wipe',
             clientId: 'tab-1',
             now: '2026-11-15T10:10:00.000Z',
@@ -138,24 +163,25 @@ describe('Motor de Base de Datos en Disco Local (localDiskDbEngine)', () => {
     });
 });
 
-describe('Middleware HTTP de Base de Datos en Disco Local', () => {
+describe('Middleware HTTP de Base de Datos SQLite + Imágenes en Disco', () => {
     let tmpDir;
     let middleware;
 
     beforeEach(() => {
-        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ropa-cbba-disk-test-'));
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ropa-cbba-sqlite-test-'));
         middleware = crearMiddlewareLocalDiskDb({ dataDir: tmpDir });
     });
 
     afterEach(() => {
         try {
+            middleware?.close?.();
             fs.rmSync(tmpDir, { recursive: true, force: true });
         } catch {
-            // Ignorar
+            // Ignorar en Windows si el SO libera el archivo un instante después
         }
     });
 
-    function invokeMiddleware(method, url, bodyObj = null) {
+    function invokeMiddleware(method, url, bodyObj = null, rawResponse = false) {
         return new Promise((resolve, reject) => {
             const req = new EventEmitter();
             req.method = method;
@@ -172,7 +198,8 @@ describe('Middleware HTTP de Base de Datos en Disco Local', () => {
                         resolve({
                             statusCode: this.statusCode,
                             headers,
-                            data: payload ? JSON.parse(payload) : null,
+                            raw: payload,
+                            data: !rawResponse && payload ? JSON.parse(payload) : null,
                         });
                     } catch (err) {
                         reject(err);
@@ -185,40 +212,179 @@ describe('Middleware HTTP de Base de Datos en Disco Local', () => {
             }).catch(reject);
 
             if (bodyObj !== null) {
-                req.emit('data', Buffer.from(JSON.stringify(bodyObj), 'utf-8'));
+                const buf = Buffer.isBuffer(bodyObj)
+                    ? bodyObj
+                    : typeof bodyObj === 'string'
+                    ? Buffer.from(bodyObj, 'utf-8')
+                    : Buffer.from(JSON.stringify(bodyObj), 'utf-8');
+                req.emit('data', buf);
             }
             req.emit('end');
         });
     }
 
-    it('persiste cambios en pos-db.json y genera respaldos en disco', async () => {
+    it('persiste en pos.sqlite, extrae fotos Base64 a imagenes/, separa embeddings y genera backups .sqlite', async () => {
         const stInicial = await invokeMiddleware('GET', '/__local_db/status');
         expect(stInicial.statusCode).toBe(200);
+        expect(stInicial.data.engine).toBe('sqlite');
         expect(stInicial.data.initialized).toBe(false);
 
         const syncRes = await invokeMiddleware('POST', '/__local_db/sync', {
             clientId: 'admin-chrome',
             mode: 'full',
             tables: {
-                products: [{ id: 10, name: 'VESTIDO GALA', shortCode: '00450', stock: 1 }],
+                products: [
+                    {
+                        id: 10,
+                        name: 'VESTIDO GALA',
+                        shortCode: '00450',
+                        globalId: 'uuid-450',
+                        stock: 1,
+                        photo: SAMPLE_DATA_URL,
+                        embedding: [0.5, 0.5, 0.707],
+                    },
+                ],
+                sales: [
+                    {
+                        id: 1,
+                        total: 250,
+                        items: [{ productId: 10, name: 'VESTIDO GALA', photo: SAMPLE_DATA_URL }],
+                    },
+                ],
                 barcodes: [{ id: 100, productId: 10, shortCode: '00450', used: false }],
-                users: [{ id: 1, username: 'admin', role: 'admin' }],
+                users: [{ id: 1, username: 'admin', role: 'admin', password: 'ab:cd' }],
             },
         });
         expect(syncRes.statusCode).toBe(200);
         expect(syncRes.data.initialized).toBe(true);
         expect(syncRes.data.revision).toBe(1);
-        expect(fs.existsSync(path.join(tmpDir, 'pos-db.json'))).toBe(true);
+        expect(syncRes.data.imagesCount).toBe(1); // Deduplicada entre products y sales!
+        expect(fs.existsSync(path.join(tmpDir, 'pos.sqlite'))).toBe(true);
 
-        // Otro navegador pide el snapshot
-        const snapRes = await invokeMiddleware('GET', '/__local_db/snapshot?tables=products,barcodes');
+        // Snapshot liviano sin embeddings
+        const snapRes = await invokeMiddleware('GET', '/__local_db/snapshot?exclude=productEmbeddings');
         expect(snapRes.statusCode).toBe(200);
-        expect(snapRes.data.tables.products).toHaveLength(1);
-        expect(snapRes.data.tables.products[0].shortCode).toBe('00450');
+        expect(snapRes.data.tables.productEmbeddings).toBeUndefined();
+        const savedProd = snapRes.data.tables.products[0];
+        expect(savedProd.shortCode).toBe('00450');
+        expect(savedProd.photo).toMatch(/^\/__local_media\/00450-[a-f0-9]{12}\.jpg$/);
+        expect(savedProd.embedding).toBeUndefined();
+        expect(savedProd.hasEmbedding).toBe(1);
+        expect(snapRes.data.tables.sales[0].items[0].photo).toBe(savedProd.photo);
 
-        // Crear backup manual en disco
+        // Verificar que GET /__local_media/<archivo> sirve exactamente los bytes JPEG
+        const imgRes = await invokeMiddleware('GET', savedProd.photo, null, true);
+        expect(imgRes.statusCode).toBe(200);
+        expect(imgRes.headers['content-type']).toBe('image/jpeg');
+        expect(Buffer.compare(imgRes.raw, SAMPLE_JPEG_BYTES)).toBe(0);
+
+        // Verificar que el vector fue movido a productEmbeddings
+        const embRes = await invokeMiddleware('GET', '/__local_db/snapshot?tables=productEmbeddings');
+        expect(embRes.data.tables.productEmbeddings).toEqual([
+            { productId: 10, globalId: 'uuid-450', embedding: [0.5, 0.5, 0.707] },
+        ]);
+
+        // Escritura incremental por fila (mode: 'ops')
+        const opsRes = await invokeMiddleware('POST', '/__local_db/sync', {
+            clientId: 'admin-chrome',
+            mode: 'ops',
+            upserts: {
+                products: [{ ...savedProd, stock: 0 }],
+            },
+        });
+        expect(opsRes.statusCode).toBe(200);
+        expect(opsRes.data.revision).toBe(2);
+
+        const afterOps = await invokeMiddleware('GET', '/__local_db/snapshot?tables=products');
+        expect(afterOps.data.tables.products[0].stock).toBe(0);
+
+        // Crear backup manual .sqlite en disco
         const backupRes = await invokeMiddleware('POST', '/__local_db/backup-now');
         expect(backupRes.statusCode).toBe(200);
+        expect(backupRes.data.fileName).toMatch(/\.sqlite$/);
         expect(fs.existsSync(backupRes.data.fullPath)).toBe(true);
+    });
+
+    it('migra automáticamente un pos-db.json existente hacia pos.sqlite + imagenes/ al arrancar', async () => {
+        middleware.close();
+        const migrateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ropa-cbba-migrate-test-'));
+        try {
+            fs.writeFileSync(
+                path.join(migrateDir, 'pos-db.json'),
+                JSON.stringify({
+                    version: 1,
+                    initialized: true,
+                    revision: 12,
+                    tables: {
+                        products: [
+                            {
+                                id: 5,
+                                shortCode: '00005',
+                                name: 'BLUSA SEDA',
+                                stock: 3,
+                                price: 180,
+                                photo: SAMPLE_DATA_URL,
+                                embedding: [0.1, 0.9],
+                            },
+                        ],
+                        users: [{ id: 1, username: 'admin', role: 'admin', password: 'hash:real' }],
+                    },
+                }),
+                'utf-8'
+            );
+
+            const migratedMw = crearMiddlewareLocalDiskDb({ dataDir: migrateDir });
+            try {
+                expect(fs.existsSync(path.join(migrateDir, 'pos.sqlite'))).toBe(true);
+                expect(fs.existsSync(path.join(migrateDir, 'pos-db.migrado-sqlite.json'))).toBe(true);
+                expect(migratedMw.store.getRevision()).toBe(13); // revision + 1 para forzar hidratación limpia
+                expect(migratedMw.store.countImages()).toBe(1);
+
+                const tables = migratedMw.store.getTables(['products', 'productEmbeddings']);
+                expect(tables.products[0].photo).toMatch(/^\/__local_media\/00005-/);
+                expect(tables.products[0].embedding).toBeUndefined();
+                expect(tables.productEmbeddings).toHaveLength(1);
+            } finally {
+                migratedMw.close();
+            }
+        } finally {
+            try {
+                fs.rmSync(migrateDir, { recursive: true, force: true });
+            } catch {
+                // Ignorar
+            }
+        }
+    });
+
+    it('importa un backup JSON por streaming directo preservando contraseñas existentes cuando vienen con ***', async () => {
+        // Primero guardar un admin con hash real
+        await invokeMiddleware('POST', '/__local_db/sync', {
+            mode: 'full',
+            clientId: 'setup',
+            tables: {
+                users: [{ id: 1, username: 'admin', role: 'admin', password: 'salt123:realhash456' }],
+            },
+        });
+
+        const backupPayload = JSON.stringify({
+            version: 10,
+            exportedAt: '2026-11-23T20:00:00.000Z',
+            data: {
+                products: [{ id: 1, name: 'PANTALON', price: 200, stock: 2, photo: SAMPLE_DATA_URL }],
+                users: [
+                    { id: 1, username: 'admin', role: 'admin', password: '***' },
+                    { id: 2, username: 'vendedora1', role: 'seller', password: '***' },
+                ],
+            },
+        });
+
+        const impRes = await invokeMiddleware('POST', '/__local_db/import-backup', backupPayload);
+        expect(impRes.statusCode).toBe(200);
+        expect(impRes.data.imagesCount).toBe(1);
+
+        const snap = await invokeMiddleware('GET', '/__local_db/snapshot?tables=products,users');
+        expect(snap.data.tables.products[0].photo).toMatch(/^\/__local_media\//);
+        expect(snap.data.tables.users.find(u => u.username === 'admin').password).toBe('salt123:realhash456');
+        expect(snap.data.tables.users.find(u => u.username === 'vendedora1').password).toBe('123456');
     });
 });

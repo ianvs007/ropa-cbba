@@ -58,12 +58,15 @@ export {
     getAuditStats,
 } from './db/audit';
 
-// Sincronización con disco local (Multi-navegador / Red Local)
+// Sincronización con disco local (SQLite + Imágenes / Multi-navegador / Red Local)
 export {
     getDiskDbStatus,
     forcePushBrowserToDisk,
     forcePullDiskToBrowser,
     triggerDiskBackupNow,
     subscribeDiskSyncStatus,
+    uploadProductImageToDisk,
+    importBackupFileViaServer,
+    runWithDiskSyncPaused,
 } from './db/diskSync';
 

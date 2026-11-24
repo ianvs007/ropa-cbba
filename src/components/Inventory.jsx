@@ -174,15 +174,20 @@ export default function Inventory() {
         setSearching(true);
         try {
             const query = await getEmbedding(canvas);
-            const indexed = await db.products.where('hasEmbedding').equals(1).toArray();
+            const [indexed, embRows] = await Promise.all([
+                db.products.where('hasEmbedding').equals(1).toArray(),
+                db.productEmbeddings ? db.productEmbeddings.toArray() : Promise.resolve([]),
+            ]);
             if (indexed.length === 0) {
                 setNoIndex(true);
                 setPhotoMatches(null);
                 return;
             }
+            const embMap = new Map(embRows.map(r => [r.productId, r.embedding]));
             const scored = indexed
-                .filter(p => Array.isArray(p.embedding) && p.embedding.length === query.length)
-                .map(p => ({ product: p, score: cosineSimilarity(query, p.embedding) }))
+                .map(p => ({ product: p, emb: embMap.get(p.id) || p.embedding }))
+                .filter(x => Array.isArray(x.emb) && x.emb.length === query.length)
+                .map(x => ({ product: x.product, score: cosineSimilarity(query, x.emb) }))
                 .sort((a, b) => b.score - a.score)
                 .slice(0, 5);
             setPhotoMatches(scored);
@@ -603,7 +608,7 @@ export default function Inventory() {
                                             {/* Miniatura de la foto del producto (56x56) */}
                                             {p.photo ? (
                                                 <div className="w-14 h-14 rounded-lg border border-pink-100 overflow-hidden flex-shrink-0">
-                                                    <img src={p.photo} alt={p.name} className="w-full h-full object-cover" />
+                                                    <img src={p.photo} alt={p.name} loading="lazy" decoding="async" className="w-full h-full object-cover" />
                                                 </div>
                                             ) : (
                                                 <div className="w-14 h-14 rounded-lg border border-gray-200 bg-gray-100 flex flex-col items-center justify-center flex-shrink-0 text-gray-300">

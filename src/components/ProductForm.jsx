@@ -8,6 +8,7 @@ import {
     generateUniqueBarcode,
     ensureBranchExists,
     getLocalISOString,
+    uploadProductImageToDisk,
 } from '../db';
 import { useUser } from '../contexts/UserContext';
 import TypeaheadInput from './ui/TypeaheadInput';
@@ -269,6 +270,7 @@ export default function ProductForm({
     const buildEmbedding = (dataUrl) => new Promise(resolve => {
         if (!dataUrl) { resolve(null); return; }
         const img = new Image();
+        img.crossOrigin = 'anonymous';
         img.onload = async () => {
             try {
                 const vec = await getEmbedding(img);
@@ -417,21 +419,42 @@ export default function ProductForm({
                 data.isBranchTransfer = true;
             }
 
-            // ── Embedding visual para "Buscar por foto" (no bloquea el guardado) ──
-            try {
-                const embedding = await buildEmbedding(form.photo);
-                if (embedding) {
-                    data.embedding = embedding;
-                    data.hasEmbedding = 1;
-                } else {
-                    data.embedding = null;
-                    data.hasEmbedding = 0;
-                }
-            } catch (e) {
-                console.warn('Generación de embedding omitida:', e);
-                data.embedding = null;
+            // ── Embedding visual separado (`productEmbeddings`) y foto en disco (`/__local_media/...`) ──
+            let pendingEmbedding = undefined; // undefined = conservar el actual, null = borrar, array = guardar
+            const photoChanged = !editing || form.photo !== (formProp?.photo || '');
+
+            if (!form.photo) {
+                data.photo = '';
                 data.hasEmbedding = 0;
+                pendingEmbedding = null;
+            } else {
+                if (photoChanged || form.hasEmbedding !== 1) {
+                    try {
+                        const vec = await buildEmbedding(form.photo);
+                        if (vec) {
+                            pendingEmbedding = vec;
+                            data.hasEmbedding = 1;
+                        } else {
+                            pendingEmbedding = null;
+                            data.hasEmbedding = 0;
+                        }
+                    } catch (e) {
+                        console.warn('Generación de embedding omitida:', e);
+                        pendingEmbedding = null;
+                        data.hasEmbedding = 0;
+                    }
+                } else {
+                    data.hasEmbedding = 1;
+                }
+
+                if (form.photo.startsWith('data:image/')) {
+                    data.photo = await uploadProductImageToDisk(
+                        form.photo,
+                        shortCodeFinal || data.globalId
+                    );
+                }
             }
+            delete data.embedding;
 
             try {
                 const autoAdd = async (table, val, extra = {}) => {
@@ -449,11 +472,13 @@ export default function ProductForm({
                     autoAdd(db.productFields, data.extraData, { type: 'text' }),
                 ]);
 
+                let savedProductId = editing;
                 if (editing) {
                     await db.products.update(editing, data);
                 } else {
                     data.createdAt = new Date().toISOString();
                     const id = await db.products.add(data);
+                    savedProductId = id;
 
                     if (isBranchMode && planSucursal) {
                         const now = getLocalISOString();
@@ -525,6 +550,19 @@ export default function ProductForm({
                             })),
                             userId: user?.id ?? null,
                             registeredBy: user?.name || user?.username || 'Sistema',
+                        });
+                    }
+                }
+
+                // Persistir o limpiar vector visual en la tabla separada `productEmbeddings`
+                if (db.productEmbeddings && savedProductId != null) {
+                    if (pendingEmbedding === null) {
+                        await db.productEmbeddings.delete(savedProductId);
+                    } else if (Array.isArray(pendingEmbedding)) {
+                        await db.productEmbeddings.put({
+                            productId: savedProductId,
+                            globalId: data.globalId || null,
+                            embedding: pendingEmbedding,
                         });
                     }
                 }

@@ -2,163 +2,32 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
 import process from 'node:process';
-import {
-
-    POS_DB_TABLES,
-    calcularEstadisticasTablas,
-    aplicarCambioEstadoDisco,
-} from '../utils/localDiskDbEngine.js';
-
-const MAX_AUTO_BACKUPS = 15;
+import { POS_DB_TABLES } from '../utils/localDiskDbEngine.js';
+import { SqlitePosStore } from './sqliteStore.js';
 
 /**
- * Crea el estado vacío inicial cuando aún no existe archivo en disco.
+ * Lee el cuerpo crudo en UTF-8 de una petición HTTP entrante (soporta backups de 300+ MB).
  */
-function crearEstadoVacio() {
-    const tables = {};
-    for (const t of POS_DB_TABLES) {
-        tables[t] = [];
-    }
-    return {
-        version: 1,
-        initialized: false,
-        revision: 0,
-        updatedAt: null,
-        lastClientId: null,
-        tables,
-    };
-}
-
-/**
- * Lee el archivo JSON de disco o devuelve un estado vacío seguro.
- */
-function cargarEstadoDesdeDisco(dbFilePath) {
-    try {
-        if (!fs.existsSync(dbFilePath)) {
-            return crearEstadoVacio();
-        }
-        const raw = fs.readFileSync(dbFilePath, 'utf-8');
-        if (!raw.trim()) return crearEstadoVacio();
-        const parsed = JSON.parse(raw);
-        const tables = {};
-        for (const t of POS_DB_TABLES) {
-            tables[t] = Array.isArray(parsed?.tables?.[t]) ? parsed.tables[t] : [];
-        }
-        return {
-            version: 1,
-            initialized: Boolean(parsed.initialized),
-            revision: Number(parsed.revision) || 0,
-            updatedAt: parsed.updatedAt || null,
-            lastClientId: parsed.lastClientId || null,
-            tables,
-        };
-    } catch (err) {
-        console.error('[LocalDiskDB] Error leyendo pos-db.json, iniciando vacío:', err.message);
-        return crearEstadoVacio();
-    }
-}
-
-/**
- * Guarda atómicamente el estado en disco usando archivo temporal + rename.
- */
-function guardarEstadoEnDisco(dbFilePath, backupsDir, estado) {
-    const dir = path.dirname(dbFilePath);
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-    if (!fs.existsSync(backupsDir)) {
-        fs.mkdirSync(backupsDir, { recursive: true });
-    }
-
-    const payload = JSON.stringify(
-        {
-            version: estado.version || 1,
-            initialized: estado.initialized,
-            revision: estado.revision,
-            updatedAt: estado.updatedAt,
-            lastClientId: estado.lastClientId,
-            tables: estado.tables,
-        },
-        null,
-        2
-    );
-
-    const tmpPath = `${dbFilePath}.tmp`;
-    fs.writeFileSync(tmpPath, payload, 'utf-8');
-    fs.renameSync(tmpPath, dbFilePath);
-
-    // Respaldo diario automático (1 por día) si tiene datos inicializados
-    if (estado.initialized) {
-        const hoy = new Date().toISOString().slice(0, 10);
-        const dailyBackupPath = path.join(backupsDir, `backup-auto-${hoy}.json`);
-        if (!fs.existsSync(dailyBackupPath)) {
-            try {
-                fs.copyFileSync(dbFilePath, dailyBackupPath);
-                rotarBackupsAutomaticos(backupsDir);
-            } catch (err) {
-                console.warn('[LocalDiskDB] No se pudo crear backup diario:', err.message);
-            }
-        }
-    }
-}
-
-/**
- * Conserva únicamente los últimos MAX_AUTO_BACKUPS respaldos automáticos diarios.
- */
-function rotarBackupsAutomaticos(backupsDir) {
-    try {
-        const files = fs
-            .readdirSync(backupsDir)
-            .filter(f => f.startsWith('backup-auto-') && f.endsWith('.json'))
-            .sort();
-        while (files.length > MAX_AUTO_BACKUPS) {
-            const oldest = files.shift();
-            if (oldest) {
-                fs.unlinkSync(path.join(backupsDir, oldest));
-            }
-        }
-    } catch {
-        // Ignorar errores de rotación
-    }
-}
-
-/**
- * Crea un backup instantáneo en la carpeta de backups del disco.
- */
-function crearBackupEnDisco(backupsDir, estado, prefijo = 'backup-manual') {
-    if (!fs.existsSync(backupsDir)) {
-        fs.mkdirSync(backupsDir, { recursive: true });
-    }
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const fileName = `${prefijo}-${stamp}.json`;
-    const fullPath = path.join(backupsDir, fileName);
-    const exportFormat = {
-        version: 26,
-        exportedAt: new Date().toISOString(),
-        revision: estado.revision,
-        data: estado.tables,
-    };
-    fs.writeFileSync(fullPath, JSON.stringify(exportFormat, null, 2), 'utf-8');
-    return { fileName, fullPath };
-}
-
-/**
- * Lee el cuerpo JSON de una petición HTTP entrante (soporta catálogos grandes).
- */
-function leerJsonBody(req) {
+function leerTextoBody(req) {
     return new Promise((resolve, reject) => {
         const chunks = [];
-        req.on('data', chunk => chunks.push(chunk));
+        req.on('data', chunk => {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
         req.on('end', () => {
             try {
-                const raw = Buffer.concat(chunks).toString('utf-8');
-                resolve(raw ? JSON.parse(raw) : {});
+                resolve(Buffer.concat(chunks).toString('utf-8'));
             } catch (err) {
                 reject(err);
             }
         });
         req.on('error', reject);
     });
+}
+
+async function leerJsonBody(req) {
+    const raw = await leerTextoBody(req);
+    return raw ? JSON.parse(raw) : {};
 }
 
 function enviarJson(res, statusCode, data) {
@@ -171,14 +40,15 @@ function enviarJson(res, statusCode, data) {
 
 /**
  * Middleware compartido para Vite dev server y Vite preview server.
+ * Provee:
+ *  - `/__local_db/*`    → Motor SQLite en disco (`datos-pos/pos.sqlite`) + SSE tiempo real
+ *  - `/__local_media/*` → Servidor y subida de imágenes físicas (`datos-pos/imagenes/`)
  */
 export function crearMiddlewareLocalDiskDb(options = {}) {
     const rootDir = options.rootDir || process.cwd();
     const dataDir = options.dataDir || path.join(rootDir, 'datos-pos');
-    const dbFilePath = path.join(dataDir, 'pos-db.json');
-    const backupsDir = path.join(dataDir, 'backups');
 
-    let estado = cargarEstadoDesdeDisco(dbFilePath);
+    const store = new SqlitePosStore({ dataDir });
     const sseClients = new Set();
 
     function emitirEventoSse(eventObj) {
@@ -192,17 +62,52 @@ export function crearMiddlewareLocalDiskDb(options = {}) {
         }
     }
 
-    function contarBackups() {
-        try {
-            if (!fs.existsSync(backupsDir)) return 0;
-            return fs.readdirSync(backupsDir).filter(f => f.endsWith('.json')).length;
-        } catch {
-            return 0;
-        }
-    }
+    const middleware = async function localDiskDbMiddleware(req, res, next) {
+        if (!req.url) return next();
 
-    return async function localDiskDbMiddleware(req, res, next) {
-        if (!req.url || !req.url.startsWith('/__local_db')) {
+        // ── A. SERVIDOR Y SUBIDA DE IMÁGENES EN DISCO (`/__local_media/*`) ──
+        if (req.url.startsWith('/__local_media')) {
+            const parsedMediaUrl = new URL(req.url, 'http://localhost');
+            const mediaPath = parsedMediaUrl.pathname;
+
+            if (req.method === 'POST' && mediaPath === '/__local_media/upload') {
+                try {
+                    const body = await leerJsonBody(req);
+                    if (!body?.dataUrl || typeof body.dataUrl !== 'string') {
+                        return enviarJson(res, 400, { ok: false, error: 'dataUrl requerido' });
+                    }
+                    const url = store.externalizeDataUrl(body.dataUrl, body.prefixHint || 'prenda');
+                    return enviarJson(res, 200, { ok: true, url });
+                } catch (err) {
+                    return enviarJson(res, 500, {
+                        ok: false,
+                        error: err.message || 'Error guardando imagen en disco',
+                    });
+                }
+            }
+
+            if (req.method === 'GET' && mediaPath.startsWith('/__local_media/')) {
+                const rawName = decodeURIComponent(mediaPath.slice('/__local_media/'.length));
+                const resolved = store.resolveImageFile(rawName);
+                if (!resolved) {
+                    res.statusCode = 404;
+                    res.end('Imagen no encontrada');
+                    return;
+                }
+                const bytes = fs.readFileSync(resolved.fullPath);
+                res.statusCode = 200;
+                res.setHeader('Content-Type', resolved.contentType);
+                res.setHeader('Content-Length', String(bytes.length));
+                res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+                res.end(bytes);
+                return;
+            }
+
+            return enviarJson(res, 404, { ok: false, error: 'Ruta de imagen no encontrada' });
+        }
+
+        // ── B. ENDPOINTS DE BASE DE DATOS SQLITE (`/__local_db/*`) ──
+        if (!req.url.startsWith('/__local_db')) {
             return next();
         }
 
@@ -220,9 +125,10 @@ export function crearMiddlewareLocalDiskDb(options = {}) {
             res.write(
                 `data: ${JSON.stringify({
                     type: 'connected',
-                    initialized: estado.initialized,
-                    revision: estado.revision,
-                    updatedAt: estado.updatedAt,
+                    engine: 'sqlite',
+                    initialized: store.isInitialized(),
+                    revision: store.getRevision(),
+                    updatedAt: store.getUpdatedAt(),
                 })}\n\n`
             );
 
@@ -233,131 +139,207 @@ export function crearMiddlewareLocalDiskDb(options = {}) {
             return;
         }
 
-        // 2. Estado resumido de la base de datos en disco
+        // 2. Estado resumido de la base de datos SQLite en disco (< 1 ms)
         if (req.method === 'GET' && pathname === '/__local_db/status') {
             return enviarJson(res, 200, {
                 ok: true,
-                initialized: estado.initialized,
-                revision: estado.revision,
-                updatedAt: estado.updatedAt,
-                dbPath: dbFilePath,
-                backupsDir,
-                backupsCount: contarBackups(),
+                ...store.getStatus(),
                 connectedClients: sseClients.size,
-                stats: calcularEstadisticasTablas(estado.tables),
             });
         }
 
         // 3. Obtener snapshot completo o de tablas específicas
         if (req.method === 'GET' && pathname === '/__local_db/snapshot') {
             const requestedTablesParam = parsedUrl.searchParams.get('tables');
-            let tablesToReturn = estado.tables;
+            const excludeParam = parsedUrl.searchParams.get('exclude');
+            const excluded = new Set(
+                excludeParam
+                    ? excludeParam.split(',').map(s => s.trim()).filter(Boolean)
+                    : []
+            );
+
+            let tableNames = POS_DB_TABLES;
             if (requestedTablesParam) {
-                const requested = requestedTablesParam
+                tableNames = requestedTablesParam
                     .split(',')
                     .map(s => s.trim())
-                    .filter(Boolean);
-                tablesToReturn = {};
-                for (const t of requested) {
-                    if (POS_DB_TABLES.includes(t)) {
-                        tablesToReturn[t] = estado.tables[t] || [];
-                    }
-                }
+                    .filter(t => Boolean(t) && POS_DB_TABLES.includes(t));
             }
+            if (excluded.size > 0) {
+                tableNames = tableNames.filter(t => !excluded.has(t));
+            }
+
+            const tablesToReturn = store.getTables(tableNames);
             return enviarJson(res, 200, {
                 ok: true,
-                initialized: estado.initialized,
-                revision: estado.revision,
-                updatedAt: estado.updatedAt,
-                lastClientId: estado.lastClientId,
+                engine: 'sqlite',
+                initialized: store.isInitialized(),
+                revision: store.getRevision(),
+                updatedAt: store.getUpdatedAt(),
+                lastClientId: store.getLastClientId(),
                 tables: tablesToReturn,
             });
         }
 
-        // 4. Sincronizar cambios (patch, full o wipe) hacia el disco
+        // 4. Sincronizar cambios incrementales (`ops`), por tabla (`patch`), completos (`full`) o borrado (`wipe`)
         if (req.method === 'POST' && pathname === '/__local_db/sync') {
             try {
                 const body = await leerJsonBody(req);
-                if (body.mode === 'wipe' && estado.initialized) {
+                if (body.mode === 'wipe' && store.isInitialized()) {
                     try {
-                        crearBackupEnDisco(backupsDir, estado, 'backup-antes-de-borrar');
+                        store.createBackup('backup-antes-de-borrar');
                     } catch {
                         // Continuar si falla backup previo
                     }
                 }
 
-                const resultado = aplicarCambioEstadoDisco(estado, body);
-                estado = {
-                    version: resultado.version,
+                const resultado = store.applySync(body);
+
+                const ssePayload = {
+                    type:
+                        body.mode === 'wipe'
+                            ? 'wipe'
+                            : body.mode === 'full'
+                            ? 'full'
+                            : body.mode === 'ops'
+                            ? 'ops'
+                            : 'patch',
                     initialized: resultado.initialized,
                     revision: resultado.revision,
                     updatedAt: resultado.updatedAt,
-                    lastClientId: resultado.lastClientId,
-                    tables: resultado.tables,
+                    clientId: resultado.lastClientId,
+                    updatedTables: resultado.updatedTables,
                 };
 
-                guardarEstadoEnDisco(dbFilePath, backupsDir, estado);
+                // Si es una operación incremental pequeña, enviar las filas directas por SSE
+                // para que otras pestañas/cajas actualicen en <1 ms sin pedir snapshot de tabla
+                if (body.mode === 'ops') {
+                    const mergedUpserts = { ...(body.upserts || {}) };
+                    if (resultado.sanitizedUpserts?.products) {
+                        mergedUpserts.products = resultado.sanitizedUpserts.products;
+                    }
+                    if (resultado.sanitizedUpserts?.sales) {
+                        mergedUpserts.sales = resultado.sanitizedUpserts.sales;
+                    }
+                    const serializedOps = JSON.stringify({
+                        upserts: mergedUpserts,
+                        deletes: body.deletes || {},
+                    });
+                    if (serializedOps.length <= 65536) {
+                        ssePayload.upserts = mergedUpserts;
+                        ssePayload.deletes = body.deletes || {};
+                    }
+                }
 
-                emitirEventoSse({
-                    type: body.mode === 'wipe' ? 'wipe' : body.mode === 'full' ? 'full' : 'patch',
-                    initialized: estado.initialized,
-                    revision: estado.revision,
-                    updatedAt: estado.updatedAt,
-                    clientId: estado.lastClientId,
-                    updatedTables: resultado.updatedTables,
-                });
+                emitirEventoSse(ssePayload);
 
                 return enviarJson(res, 200, {
                     ok: true,
-                    initialized: estado.initialized,
-                    revision: estado.revision,
-                    updatedAt: estado.updatedAt,
+                    initialized: resultado.initialized,
+                    revision: resultado.revision,
+                    updatedAt: resultado.updatedAt,
                     updatedTables: resultado.updatedTables,
-                    stats: calcularEstadisticasTablas(estado.tables),
+                    sanitizedUpserts: resultado.sanitizedUpserts,
+                    stats: store.getStats(),
+                    imagesCount: store.countImages(),
                 });
             } catch (err) {
-                console.error('[LocalDiskDB] Error guardando sync en disco:', err);
+                console.error('[SQLite] Error guardando sync en disco:', err);
                 return enviarJson(res, 500, {
                     ok: false,
-                    error: err.message || 'Error guardando en disco',
+                    error: err.message || 'Error guardando en SQLite',
                 });
             }
         }
 
-        // 5. Crear respaldo instantáneo en disco bajo demanda
+        // 5. Importar un archivo `.json` pesado (ej. 300+ MB) directo en servidor Node + SQLite
+        if (req.method === 'POST' && pathname === '/__local_db/import-backup') {
+            try {
+                if (store.isInitialized()) {
+                    try {
+                        store.createBackup('backup-previo-importacion');
+                    } catch {
+                        // Ignorar si falla backup previo
+                    }
+                }
+                const rawText = await leerTextoBody(req);
+                const resultado = store.importBackupJsonString(rawText);
+
+                emitirEventoSse({
+                    type: 'full',
+                    initialized: resultado.initialized,
+                    revision: resultado.revision,
+                    updatedAt: resultado.updatedAt,
+                    clientId: 'server-backup-import',
+                    updatedTables: resultado.updatedTables,
+                });
+
+                return enviarJson(res, 200, {
+                    ok: true,
+                    initialized: resultado.initialized,
+                    revision: resultado.revision,
+                    updatedAt: resultado.updatedAt,
+                    stats: store.getStats(),
+                    imagesCount: store.countImages(),
+                });
+            } catch (err) {
+                console.error('[SQLite] Error importando backup en disco:', err);
+                return enviarJson(res, 500, {
+                    ok: false,
+                    error: err.message || 'No se pudo importar el backup en SQLite',
+                });
+            }
+        }
+
+        // 6. Crear respaldo instantáneo `.sqlite` en disco bajo demanda (`VACUUM INTO`)
         if (req.method === 'POST' && pathname === '/__local_db/backup-now') {
             try {
-                const info = crearBackupEnDisco(backupsDir, estado, 'backup-manual');
+                const info = store.createBackup('backup-manual');
                 return enviarJson(res, 200, {
                     ok: true,
                     fileName: info.fileName,
                     fullPath: info.fullPath,
-                    backupsCount: contarBackups(),
+                    backupsCount: store.countBackups(),
                 });
             } catch (err) {
                 return enviarJson(res, 500, {
                     ok: false,
-                    error: err.message || 'No se pudo escribir el backup en disco',
+                    error: err.message || 'No se pudo crear el respaldo SQLite en disco',
                 });
             }
         }
 
         return enviarJson(res, 404, { ok: false, error: 'Ruta de BD local no encontrada' });
     };
+
+    middleware.close = () => store.close();
+    middleware.store = store;
+    return middleware;
 }
 
 /**
- * Plugin de Vite que activa la Base de Datos en Disco Local tanto en dev como en preview.
+ * Plugin de Vite que activa la Base de Datos SQLite + Imágenes en Disco tanto en dev como en preview.
  */
 export function localDiskDbPlugin(options = {}) {
-    const middleware = crearMiddlewareLocalDiskDb(options);
+    let middleware = null;
+    const ensureMiddleware = () => {
+        if (!middleware) {
+            middleware = crearMiddlewareLocalDiskDb(options);
+        }
+        return middleware;
+    };
+
     return {
         name: 'ropa-cbba-local-disk-db',
         configureServer(server) {
-            server.middlewares.use(middleware);
+            const mw = ensureMiddleware();
+            server.middlewares.use(mw);
+            server.httpServer?.once('close', () => mw.close?.());
         },
         configurePreviewServer(server) {
-            server.middlewares.use(middleware);
+            const mw = ensureMiddleware();
+            server.middlewares.use(mw);
+            server.httpServer?.once('close', () => mw.close?.());
         },
     };
 }

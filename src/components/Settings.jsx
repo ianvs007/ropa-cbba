@@ -50,15 +50,16 @@ export default function Settings() {
         setTimeout(() => setSaved(false), 3000);
     };
 
-    // Carga un dataURL en un <img> y genera su embedding visual.
-    const embedFromPhoto = (dataUrl) => new Promise(resolve => {
+    // Carga una foto (URL `/__local_media/...` o dataURL) en un <img> y genera su embedding visual.
+    const embedFromPhoto = (photoSrc) => new Promise(resolve => {
         const img = new window.Image();
+        img.crossOrigin = 'anonymous';
         img.onload = async () => {
             try { resolve(await getEmbedding(img)); }
             catch (e) { console.warn('Embedding falló:', e); resolve(null); }
         };
         img.onerror = () => resolve(null);
-        img.src = dataUrl;
+        img.src = photoSrc;
     });
 
     // Indexa los productos con foto que aún no tienen huella visual.
@@ -79,7 +80,17 @@ export default function Settings() {
             for (const p of withPhoto) {
                 try {
                     const vec = await embedFromPhoto(p.photo);
-                    if (vec) { await db.products.update(p.id, { embedding: vec, hasEmbedding: 1 }); ok++; }
+                    if (vec) {
+                        if (db.productEmbeddings) {
+                            await db.productEmbeddings.put({
+                                productId: p.id,
+                                globalId: p.globalId || null,
+                                embedding: vec,
+                            });
+                        }
+                        await db.products.update(p.id, { hasEmbedding: 1 });
+                        ok++;
+                    }
                 } catch (e) {
                     console.warn('No se pudo indexar el producto', p.id, e);
                 }

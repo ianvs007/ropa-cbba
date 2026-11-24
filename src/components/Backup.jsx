@@ -9,6 +9,7 @@ import {
     forcePullDiskToBrowser,
     triggerDiskBackupNow,
     subscribeDiskSyncStatus,
+    importBackupFileViaServer,
 } from '../db';
 import { Database, Download, Upload, AlertTriangle, CheckCircle, X, Trash2, HardDrive, RefreshCw, Save } from 'lucide-react';
 
@@ -19,6 +20,7 @@ export default function Backup() {
     const [loading, setLoading] = React.useState(false);
     const [msg, setMsg] = React.useState(null);
     const [confirmImport, setConfirmImport] = React.useState(null);
+    const [pendingFile, setPendingFile] = React.useState(null);
     const [confirmReset, setConfirmReset] = React.useState(false);
     const [confirmWipe, setConfirmWipe] = React.useState(false);
     const [diskStatus, setDiskStatus] = React.useState(null);
@@ -96,27 +98,56 @@ export default function Backup() {
     const handleFileSelect = (e) => {
         const file = e.target.files[0];
         if (!file) return;
+        e.target.value = '';
+
+        // Si SQLite en disco está conectado y el archivo supera 15 MB (ej. backups antiguos de 300+ MB con fotos Base64),
+        // evitar FileReader + JSON.parse en el navegador para no agotar la RAM de la pestaña.
+        if (diskStatus?.connected && file.size > 15 * 1024 * 1024) {
+            setPendingFile(file);
+            setConfirmImport({
+                streamDirecto: true,
+                fileName: file.name,
+                sizeMb: (file.size / (1024 * 1024)).toFixed(1),
+            });
+            return;
+        }
+
         const reader = new FileReader();
         reader.onload = (ev) => {
             try {
                 const obj = JSON.parse(ev.target.result);
-                if (!obj.data) { showMsg('error', 'Archivo de backup inválido'); return; }
-                setConfirmImport(obj);
+                if (!obj.data && !obj.tables) { showMsg('error', 'Archivo de backup inválido'); return; }
+                setPendingFile(file);
+                setConfirmImport({
+                    ...obj,
+                    data: obj.data || obj.tables,
+                });
             } catch {
                 showMsg('error', 'No se pudo leer el archivo. ¿Es un backup válido?');
             }
         };
         reader.readAsText(file);
-        e.target.value = '';
     };
 
     const handleImportConfirm = async () => {
         if (!confirmImport) return;
         setLoading(true);
         try {
-            await importDatabase(confirmImport);
-            setConfirmImport(null);
-            showMsg('success', '✅ Datos importados correctamente. Recarga la página para ver los cambios.');
+            if (diskStatus?.connected && pendingFile) {
+                const res = await importBackupFileViaServer(pendingFile);
+                setConfirmImport(null);
+                setPendingFile(null);
+                showMsg(
+                    'success',
+                    `✅ Restaurado en SQLite (${res.stats?.products || 0} prendas, ${res.imagesCount || 0} fotos extraídas a disco).`
+                );
+            } else {
+                const objToImport = confirmImport;
+                setConfirmImport(null);
+                setPendingFile(null);
+                await importDatabase(objToImport);
+                showMsg('success', '✅ Datos importados correctamente. Recarga la página para ver los cambios.');
+            }
         } catch (err) {
             showMsg('error', `Error al importar: ${err.message}`);
         } finally {
@@ -246,7 +277,7 @@ export default function Backup() {
                             <p className="text-blue-500 font-bold text-sm tracking-widest uppercase">REEMPLAZO DE DATOS</p>
                         </div>
                     </div>
-                    <button onClick={() => setConfirmImport(null)} 
+                    <button onClick={() => { setConfirmImport(null); setPendingFile(null); }} 
                         className="w-12 h-12 bg-pink-50 text-pink-400 rounded-2xl flex items-center justify-center hover:bg-pink-100 transition-all">
                         <X size={24} />
                     </button>
@@ -254,19 +285,28 @@ export default function Backup() {
 
                 <div className="fashion-card p-10 bg-amber-50 border-2 border-amber-200 mb-10">
                     <p className="text-amber-800 font-black text-xs uppercase tracking-widest mb-8 text-center">Resumen del Archivo</p>
-                    <div className="grid grid-cols-2 gap-8">
-                        {[
-                            { label: 'Prendas', val: confirmImport.data?.products?.length || 0 },
-                            { label: 'Ventas', val: confirmImport.data?.sales?.length || 0 },
-                            { label: 'Movimientos', val: confirmImport.data?.kardex?.length || 0 },
-                            { label: 'Usuarios', val: confirmImport.data?.users?.length || 0 }
-                        ].map((stat, i) => (
-                            <div key={i} className="text-center group">
-                                <p className="text-3xl font-black text-amber-900 group-hover:scale-110 transition-transform">{stat.val}</p>
-                                <p className="text-[10px] font-black text-amber-500 uppercase tracking-widest mt-1">{stat.label}</p>
-                            </div>
-                        ))}
-                    </div>
+                    {confirmImport.streamDirecto ? (
+                        <div className="text-center space-y-2">
+                            <p className="text-xl font-black text-amber-900 break-all">{confirmImport.fileName}</p>
+                            <p className="text-sm font-bold text-amber-700">
+                                Tamaño: {confirmImport.sizeMb} MB — Restauración directa en SQLite + extracción automática de fotos a <code className="bg-amber-100 px-1 rounded">datos-pos/imagenes/</code>
+                            </p>
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-2 gap-8">
+                            {[
+                                { label: 'Prendas', val: confirmImport.data?.products?.length || 0 },
+                                { label: 'Ventas', val: confirmImport.data?.sales?.length || 0 },
+                                { label: 'Movimientos', val: confirmImport.data?.kardex?.length || 0 },
+                                { label: 'Usuarios', val: confirmImport.data?.users?.length || 0 }
+                            ].map((stat, i) => (
+                                <div key={i} className="text-center group">
+                                    <p className="text-3xl font-black text-amber-900 group-hover:scale-110 transition-transform">{stat.val}</p>
+                                    <p className="text-[10px] font-black text-amber-500 uppercase tracking-widest mt-1">{stat.label}</p>
+                                </div>
+                            ))}
+                        </div>
+                    )}
                 </div>
 
                 <div className="bg-red-50 border border-red-100 rounded-[2rem] p-6 text-center mb-12">
@@ -278,7 +318,7 @@ export default function Backup() {
                 {/* Footer Flotante Acciones */}
                 <div className="fixed bottom-8 left-1/2 -translate-x-1/2 w-full max-w-lg px-6 z-50">
                     <div className="bg-white/90 backdrop-blur-2xl border-2 border-pink-100 p-4 rounded-[2.5rem] shadow-2xl flex gap-4">
-                        <button onClick={() => setConfirmImport(null)} 
+                        <button onClick={() => { setConfirmImport(null); setPendingFile(null); }} 
                             className="px-8 py-5 border-2 border-pink-100 text-pink-400 font-black rounded-3xl text-xs uppercase tracking-widest hover:bg-pink-50 transition-all">
                             CANCELAR
                         </button>
@@ -315,37 +355,46 @@ export default function Backup() {
                     </div>
                     <div className="flex-1">
                         <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
-                            <h2 className="font-bold text-pink-900">Base de Datos Central en Disco Local</h2>
+                            <h2 className="font-bold text-pink-900">Base de Datos SQLite + Imágenes en Disco</h2>
                             <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${
                                 diskStatus?.connected
                                     ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
                                     : 'bg-amber-100 text-amber-800 border border-amber-300'
                             }`}>
-                                {diskStatus?.connected ? '🟢 Conectada en Disco' : '🟡 Solo Navegador'}
+                                {diskStatus?.connected ? '🟢 SQLite Activo' : '🟡 Solo Navegador'}
                             </span>
                         </div>
                         <p className="text-sm text-pink-600 mb-3">
-                            Todos los navegadores (Chrome, Edge, perfiles distintos) y otras PCs de la red local
-                            comparten automáticamente el mismo archivo físico en disco en tiempo real.
+                            Motor relacional SQLite en disco con imágenes físicas separadas en carpeta local para cambio instantáneo de pantallas y respaldos sin límite de memoria.
                         </p>
 
                         {diskStatus?.connected && (
                             <div className="bg-white/90 border border-emerald-200 rounded-xl p-3 mb-4 text-xs text-pink-800 space-y-1.5">
                                 <div>
-                                    <strong>Archivo en disco:</strong>{' '}
+                                    <strong>Base SQLite:</strong>{' '}
                                     <code className="bg-emerald-50 px-1.5 py-0.5 rounded text-[11px] break-all">
-                                        {diskStatus.dbPath || 'datos-pos/pos-db.json'}
+                                        {diskStatus.dbPath || 'datos-pos/pos.sqlite'}
                                     </code>
                                 </div>
+                                {diskStatus.imagesDir && (
+                                    <div>
+                                        <strong>Carpeta de fotos:</strong>{' '}
+                                        <code className="bg-emerald-50 px-1.5 py-0.5 rounded text-[11px] break-all">
+                                            {diskStatus.imagesDir}
+                                        </code>
+                                    </div>
+                                )}
                                 {diskStatus.stats && (
                                     <div className="flex flex-wrap gap-3 pt-1 text-emerald-900 font-semibold">
                                         <span>Prendas: {diskStatus.stats.products}</span>
+                                        <span>•</span>
+                                        <span>Fotos en disco: {diskStatus.imagesCount || 0}</span>
                                         <span>•</span>
                                         <span>Unidades: {diskStatus.stats.barcodes}</span>
                                         <span>•</span>
                                         <span>Ventas: {diskStatus.stats.sales}</span>
                                         <span>•</span>
-                                        <span>Respaldos en disco: {diskStatus.backupsCount || 0}</span>
+                                        <span>Respaldos SQLite: {diskStatus.backupsCount || 0}</span>
                                     </div>
                                 )}
                             </div>

@@ -586,4 +586,59 @@ db.version(27).stores({
     webEventos: 'id, tipo, productId, pedidoRef, aplicadoEn',
 });
 
+// ==============================================================================
+// ⚡ ESQUEMA v28 — TABLA SEPARADA DE EMBEDDINGS VISUALES (CATÁLOGO ULTRALIGERO)
+// ==============================================================================
+// Saca los vectores `embedding` (1024 floats por prenda) fuera de `products` hacia
+// `productEmbeddings` para que `db.products.toArray()` en cada menú pese <1 MB y
+// responda en pocos milisegundos, cargando vectores solo al usar "Buscar por foto".
+db.version(28).stores({
+    products: '++id, globalId, name, barcode, category, brand, size, color, stock, cost, price, shortCode, active, createdAt, updatedAt, hasEmbedding',
+    productEmbeddings: 'productId, globalId',
+    kardex: '++id, productId, date, type',
+    sales: '++id, date, total, sellerId, paymentMethod, status, shiftId, pedidoRefWeb, channel, deliveryStatus',
+    expenseCategories: '++id, name',
+    expenses: '++id, date, categoryId, amount, paymentMethod, userId, registeredBy, shiftId',
+    users: '++id, username, role',
+    settings: 'key',
+    reservations: '++id, clientName, clientPhone, productId, status, createdAt, sellerId',
+    reservationPayments: '++id, reservationId, date, status, userId, shiftId',
+    categories: '++id, name',
+    productNames: '++id, name',
+    productFields: '++id, name, type',
+    barcodes: '++id, productId, barcode, shortCode, used, createdAt',
+    brands: '++id, name',
+    colors: '++id, name',
+    branches: '++id, name',
+    branchTransfers: '++id, transferUid, direction, status, originBranch, destinationBranch, createdAt, syncedAt',
+    cashClosures: '++id, date, userId, closedAt, openingId',
+    cashClosureHistory: '++id, closureId, date, changedBy',
+    securityLogs: '++id, timestamp, eventType, userId',
+    cashOpenings: '++id, date, userId, openedAt',
+    webEventos: 'id, tipo, productId, pedidoRef, aplicadoEn',
+}).upgrade(async tx => {
+    const prods = await tx.products.toArray();
+    const extracted = [];
+    for (const p of prods) {
+        if (Array.isArray(p.embedding) && p.embedding.length > 0 && p.id != null) {
+            extracted.push({
+                productId: p.id,
+                globalId: p.globalId || null,
+                embedding: p.embedding,
+            });
+            const copy = { ...p, hasEmbedding: 1 };
+            delete copy.embedding;
+            await tx.products.put(copy);
+        } else if ('embedding' in p) {
+            const copy = { ...p };
+            delete copy.embedding;
+            await tx.products.put(copy);
+        }
+    }
+    if (extracted.length > 0) {
+        await tx.productEmbeddings.bulkPut(extracted);
+    }
+});
+
+
 
