@@ -26,13 +26,17 @@ if errorlevel 1 (
 )
 echo [OK] Node.js detectado correctamente.
 
-REM 2. Instalacion de dependencias
-if not exist "node_modules" (
+REM 2. Instalacion de dependencias (npm ci = mismas versiones que package-lock)
+if not exist "node_modules\vite\package.json" (
     echo.
     echo [INFO] Primera instalacion... descargando modulos del sistema.
     echo        Esto puede tardar unos minutos segun tu internet.
     echo.
-    call npm install
+    if exist "package-lock.json" (
+        call npm.cmd ci
+    ) else (
+        call npm.cmd install
+    )
     if errorlevel 1 (
         color 0c
         echo.

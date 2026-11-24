@@ -38,9 +38,13 @@ Para ver el avance del sistema, consulta [docs/avance.md](docs/avance.md).
 
 ## Instalación
 
+En las PCs de la tienda (Windows): doble clic en `INSTALAR_SISTEMA.bat` una vez, luego
+abrir con `iniciar-servicio-silencioso.bat` (o el acceso directo del Escritorio). Actualizar
+con `ACTUALIZAR_SISTEMA.bat`. No hace falta terminal ni `npm run dev`.
+
 ```bash
-npm install
-npm run build   # genera dist/ (ya viene versionado)
+npm ci
+npm run build   # genera dist/ (ya viene versionado en main)
 npm run start   # produccion: http://localhost:3001
 ```
 
